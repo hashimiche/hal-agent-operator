@@ -1,7 +1,7 @@
 # Build manager + triage binaries (same image, different entrypoint for Jobs)
 FROM golang:1.26 AS builder
-ARG TARGETOS
-ARG TARGETARCH
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
 
 WORKDIR /workspace
 COPY go.mod go.mod
@@ -10,8 +10,8 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
-RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o triage cmd/triage/main.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -a -o manager ./cmd/main.go
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -a -o triage ./cmd/triage
 
 FROM gcr.io/distroless/static:nonroot
 WORKDIR /

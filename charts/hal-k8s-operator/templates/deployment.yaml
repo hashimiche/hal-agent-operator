@@ -2,7 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "hal-k8s-operator.fullname" . }}
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "hal-k8s-operator.labels" . | nindent 4 }}
     {{- include "hal-k8s-operator.selectorLabels" . | nindent 4 }}
@@ -32,9 +32,9 @@ spec:
             - --health-probe-bind-address=:8081
             - --metrics-bind-address=0
             - --triage-image={{ include "hal-k8s-operator.triageImage" . }}
-            - --claude-secret-name={{ .Values.claude.secretName }}
-            - --claude-secret-key={{ .Values.claude.secretKey }}
-            - --claude-model={{ .Values.triage.model }}
+            - --gemini-secret-name={{ .Values.gemini.secretName }}
+            - --gemini-secret-key={{ .Values.gemini.secretKey }}
+            - --gemini-model={{ .Values.triage.model }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

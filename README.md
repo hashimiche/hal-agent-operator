@@ -12,8 +12,9 @@ The controller watches `IssueResolution` custom resources and advances
 receiver and Jobs.
 
 **Current POC (KinD):** apply a CR by hand → controller creates a **triage Job**
-that calls **Claude** → analysis in Job logs + `status.triage`.  
-See [`docs/POC-KIND.md`](docs/POC-KIND.md). Helm chart: `charts/hal-k8s-operator`.
+that calls **Gemini** → analysis in Job logs + `status.triage`.  
+Step-by-step runbook: [`POC.md`](POC.md). Command entry point: `task` ([`Taskfile.yml`](Taskfile.yml)).
+Remaining/completed agent tasks: [`GROK_PLAN.md`](GROK_PLAN.md). Helm chart: `charts/hal-k8s-operator`.
 
 ## Getting Started
 

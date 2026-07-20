@@ -24,6 +24,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -80,52 +81,39 @@ var _ = Describe("IssueResolution Controller", func() {
 			if err := k8sClient.Get(ctx, jobKey, job); err == nil {
 				_ = k8sClient.Delete(ctx, job, client.PropagationPolicy(metav1.DeletePropagationBackground))
 			}
+
+			var pods corev1.PodList
+			_ = k8sClient.List(ctx, &pods, client.InNamespace(resourceNamespace), client.MatchingLabels{
+				labelIssueResolution: resourceName,
+			})
+			for i := range pods.Items {
+				_ = k8sClient.Delete(ctx, &pods.Items[i])
+			}
 		})
 
-		It("should create a triage Job", func() {
-			reconciler := &IssueResolutionReconciler{
+		newReconciler := func() *IssueResolutionReconciler {
+			return &IssueResolutionReconciler{
 				Client:           k8sClient,
 				Scheme:           k8sClient.Scheme(),
 				TriageImage:      "hal-k8s-operator:poc",
-				ClaudeSecretName: "claude-api",
+				GeminiSecretName: "gemini-api",
 			}
+		}
 
-			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
-			Expect(err).NotTo(HaveOccurred())
-
-			job := &batchv1.Job{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{
-				Name:      resourceName + "-triage",
-				Namespace: resourceNamespace,
-			}, job)).To(Succeed())
-			Expect(job.Spec.Template.Spec.Containers[0].Command).To(Equal([]string{"/triage"}))
-
-			updated := &agentv1alpha1.IssueResolution{}
-			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
-			Expect(updated.Status.Phase).To(Equal(agentv1alpha1.PhaseTriage))
-		})
-
-		It("should move to PendingValidation when triage Job succeeds with in-scope result", func() {
-			reconciler := &IssueResolutionReconciler{
-				Client:      k8sClient,
-				Scheme:      k8sClient.Scheme(),
-				TriageImage: "hal-k8s-operator:poc",
-			}
-
+		createSucceededJobWithMessage := func(message string) {
+			reconciler := newReconciler()
 			_, err := reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
 
 			job := &batchv1.Job{}
 			jobKey := types.NamespacedName{Name: resourceName + "-triage", Namespace: resourceNamespace}
 			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
-
-			By("simulating a succeeded Job + pod termination message")
 			job.Status.Succeeded = 1
 			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
 
 			pod := &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      resourceName + "-triage-pod",
+					Name:      resourceName + "-triage-ok",
 					Namespace: resourceNamespace,
 					Labels: map[string]string{
 						labelIssueResolution: resourceName,
@@ -142,13 +130,34 @@ var _ = Describe("IssueResolution Controller", func() {
 				State: corev1.ContainerState{
 					Terminated: &corev1.ContainerStateTerminated{
 						ExitCode: 0,
-						Message:  `{"inScope":true,"suspicious":false,"summary":"doc fix ok","model":"test"}`,
+						Message:  message,
 					},
 				},
 			}}
 			Expect(k8sClient.Status().Update(ctx, pod)).To(Succeed())
+		}
 
-			_, err = reconciler.Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+		It("should create a triage Job", func() {
+			_, err := newReconciler().Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			job := &batchv1.Job{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{
+				Name:      resourceName + "-triage",
+				Namespace: resourceNamespace,
+			}, job)).To(Succeed())
+			Expect(job.Spec.Template.Spec.Containers[0].Command).To(Equal([]string{"/triage"}))
+			Expect(job.Spec.Template.Spec.Containers[0].Env).To(ContainElement(HaveField("Name", "GEMINI_API_KEY")))
+
+			updated := &agentv1alpha1.IssueResolution{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(agentv1alpha1.PhaseTriage))
+		})
+
+		It("should move to PendingValidation when triage Job succeeds with in-scope result", func() {
+			createSucceededJobWithMessage(`{"inScope":true,"suspicious":false,"summary":"doc fix ok","model":"test"}`)
+
+			_, err := newReconciler().Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
 
 			updated := &agentv1alpha1.IssueResolution{}
@@ -156,8 +165,145 @@ var _ = Describe("IssueResolution Controller", func() {
 			Expect(updated.Status.Phase).To(Equal(agentv1alpha1.PhasePendingValidation))
 			Expect(updated.Status.Triage.InScope).To(BeTrue())
 			Expect(updated.Status.Triage.Summary).To(Equal("doc fix ok"))
+		})
 
-			Expect(k8sClient.Delete(ctx, pod)).To(Succeed())
+		It("should move to Rejected when triage says out of scope", func() {
+			createSucceededJobWithMessage(`{"inScope":false,"suspicious":false,"summary":"needs Multipass","model":"test"}`)
+
+			_, err := newReconciler().Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &agentv1alpha1.IssueResolution{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(agentv1alpha1.PhaseRejected))
+			cond := meta.FindStatusCondition(updated.Status.Conditions, agentv1alpha1.ConditionTriaged)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(cond.Reason).To(Equal("Rejected"))
+		})
+
+		It("should move to Failed when Job fails", func() {
+			_, err := newReconciler().Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			job := &batchv1.Job{}
+			jobKey := types.NamespacedName{Name: resourceName + "-triage", Namespace: resourceNamespace}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			job.Status.Failed = 1
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+			_, err = newReconciler().Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &agentv1alpha1.IssueResolution{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(agentv1alpha1.PhaseFailed))
+			cond := meta.FindStatusCondition(updated.Status.Conditions, agentv1alpha1.ConditionFailed)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionTrue))
+		})
+
+		It("should move to Failed when termination message has parseError", func() {
+			createSucceededJobWithMessage(`{"inScope":false,"suspicious":false,"summary":"bad json","model":"test","parseError":true}`)
+
+			_, err := newReconciler().Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &agentv1alpha1.IssueResolution{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(agentv1alpha1.PhaseFailed))
+			Expect(updated.Status.Triage.ParseError).To(BeTrue())
+			cond := meta.FindStatusCondition(updated.Status.Conditions, agentv1alpha1.ConditionFailed)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Reason).To(Equal("TriageResultUnreadable"))
+		})
+
+		It("should prefer the successful pod when a failed attempt also has a termination message", func() {
+			_, err := newReconciler().Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			job := &batchv1.Job{}
+			jobKey := types.NamespacedName{Name: resourceName + "-triage", Namespace: resourceNamespace}
+			Expect(k8sClient.Get(ctx, jobKey, job)).To(Succeed())
+			job.Status.Succeeded = 1
+			Expect(k8sClient.Status().Update(ctx, job)).To(Succeed())
+
+			failedPod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName + "-triage-fail",
+					Namespace: resourceNamespace,
+					Labels: map[string]string{
+						labelIssueResolution: resourceName,
+						labelJobRole:         jobRoleTriage,
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "triage", Image: "hal-k8s-operator:poc"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, failedPod)).To(Succeed())
+			failedPod.Status.ContainerStatuses = []corev1.ContainerStatus{{
+				Name: "triage",
+				State: corev1.ContainerState{
+					Terminated: &corev1.ContainerStateTerminated{
+						ExitCode: 1,
+						Message:  `{"inScope":false,"suspicious":false,"summary":"from failed pod","model":"test"}`,
+					},
+				},
+			}}
+			Expect(k8sClient.Status().Update(ctx, failedPod)).To(Succeed())
+
+			okPod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName + "-triage-ok2",
+					Namespace: resourceNamespace,
+					Labels: map[string]string{
+						labelIssueResolution: resourceName,
+						labelJobRole:         jobRoleTriage,
+					},
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "triage", Image: "hal-k8s-operator:poc"}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, okPod)).To(Succeed())
+			okPod.Status.ContainerStatuses = []corev1.ContainerStatus{{
+				Name: "triage",
+				State: corev1.ContainerState{
+					Terminated: &corev1.ContainerStateTerminated{
+						ExitCode: 0,
+						Message:  `{"inScope":true,"suspicious":false,"summary":"from success pod","model":"test"}`,
+					},
+				},
+			}}
+			Expect(k8sClient.Status().Update(ctx, okPod)).To(Succeed())
+
+			_, err = newReconciler().Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &agentv1alpha1.IssueResolution{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(agentv1alpha1.PhasePendingValidation))
+			Expect(updated.Status.Triage.Summary).To(Equal("from success pod"))
+		})
+
+		It("should move to Ready when approved while PendingValidation", func() {
+			createSucceededJobWithMessage(`{"inScope":true,"suspicious":false,"summary":"ok","model":"test"}`)
+			_, err := newReconciler().Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			current := &agentv1alpha1.IssueResolution{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, current)).To(Succeed())
+			Expect(current.Status.Phase).To(Equal(agentv1alpha1.PhasePendingValidation))
+			current.Spec.Approved = true
+			Expect(k8sClient.Update(ctx, current)).To(Succeed())
+
+			_, err = newReconciler().Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &agentv1alpha1.IssueResolution{}
+			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
+			Expect(updated.Status.Phase).To(Equal(agentv1alpha1.PhaseReady))
 		})
 	})
 })

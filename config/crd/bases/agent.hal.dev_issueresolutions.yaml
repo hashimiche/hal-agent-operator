@@ -259,6 +259,11 @@ spec:
                   model:
                     description: model identifies the model used for triage (no secrets).
                     type: string
+                  parseError:
+                    description: |-
+                      parseError is true when the Job succeeded but the model output was not usable JSON.
+                      Distinct from Rejected (business out-of-scope).
+                    type: boolean
                   summary:
                     description: summary is a short human-readable triage rationale.
                     maxLength: 2000

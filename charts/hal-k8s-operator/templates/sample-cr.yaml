@@ -3,7 +3,7 @@ apiVersion: agent.hal.dev/v1alpha1
 kind: IssueResolution
 metadata:
   name: issue-1234
-  namespace: {{ .Values.namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "hal-k8s-operator.labels" . | nindent 4 }}
 spec:

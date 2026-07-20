@@ -35,6 +35,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	agentv1alpha1 "github.com/hashicorp-academy/hal-k8s-operator/api/v1alpha1"
+	"github.com/hashicorp-academy/hal-k8s-operator/internal/defaults"
 )
 
 const (
@@ -44,27 +45,22 @@ const (
 	labelIssueResolution = "hal.dev/issueresolution"
 	labelJobRole         = "hal.dev/job-role"
 	jobRoleTriage        = "triage"
-
-	defaultTriageImage      = "hal-k8s-operator:poc"
-	defaultClaudeSecretName = "claude-api"
-	defaultClaudeSecretKey  = "ANTHROPIC_API_KEY"
-	defaultClaudeModel      = "claude-haiku-4-5-20251001"
 )
 
 // IssueResolutionReconciler reconciles a IssueResolution object.
-// POC: creates a triage Job that calls Claude; result is in Job logs (+ termination-log).
+// POC: creates a triage Job that calls Gemini; result is in Job logs (+ termination-log).
 type IssueResolutionReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 
 	// TriageImage is the container image for Job 1 (same image as operator in KinD POC).
 	TriageImage string
-	// ClaudeSecretName holds the Anthropic API key (key ANTHROPIC_API_KEY by default).
-	ClaudeSecretName string
-	// ClaudeSecretKey is the key inside the Secret.
-	ClaudeSecretKey string
-	// ClaudeModel is passed to the triage Job as ANTHROPIC_MODEL.
-	ClaudeModel string
+	// GeminiSecretName holds the Gemini API key.
+	GeminiSecretName string
+	// GeminiSecretKey is the key inside the Secret.
+	GeminiSecretKey string
+	// GeminiModel is passed to the triage Job as GEMINI_MODEL.
+	GeminiModel string
 }
 
 type triageJobResult struct {
@@ -72,6 +68,7 @@ type triageJobResult struct {
 	Suspicious bool   `json:"suspicious"`
 	Summary    string `json:"summary"`
 	Model      string `json:"model"`
+	ParseError bool   `json:"parseError,omitempty"`
 }
 
 // +kubebuilder:rbac:groups=agent.hal.dev,resources=issueresolutions,verbs=get;list;watch;create;update;patch;delete
@@ -108,7 +105,6 @@ func (r *IssueResolutionReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		result, err = r.reconcilePendingValidation(ctx, &ir)
 	case agentv1alpha1.PhaseReady, agentv1alpha1.PhaseExecuting,
 		agentv1alpha1.PhasePROpen, agentv1alpha1.PhaseDone:
-		// Job 2 / PR path not in this POC — hold.
 		ir.Status.Message = "POC stops after triage; Job 2 not wired"
 		result = ctrl.Result{}
 	case agentv1alpha1.PhaseRejected, agentv1alpha1.PhaseFailed:
@@ -116,7 +112,7 @@ func (r *IssueResolutionReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	default:
 		log.Info("unknown phase, resetting to Triage", "phase", phase)
 		ir.Status.Phase = agentv1alpha1.PhaseTriage
-		result = ctrl.Result{Requeue: true}
+		result = ctrl.Result{RequeueAfter: time.Second}
 	}
 	if err != nil {
 		return ctrl.Result{}, err
@@ -159,24 +155,40 @@ func (r *IssueResolutionReconciler) reconcileTriage(ctx context.Context, ir *age
 
 	if job.Status.Succeeded > 0 {
 		tr, termErr := r.readTriageResult(ctx, ir, &job)
-		if termErr != nil {
-			ir.Status.Message = fmt.Sprintf("Triage Job succeeded but could not read result: %v (see job logs)", termErr)
-			ir.Status.Triage = agentv1alpha1.TriageStatus{
-				Summary: ir.Status.Message,
-				Model:   r.claudeModel(),
+		if termErr != nil || tr.ParseError {
+			msg := "Triage result unreadable"
+			if termErr != nil {
+				msg = fmt.Sprintf("Triage Job succeeded but could not read result: %v (see job logs)", termErr)
+			} else {
+				msg = "Triage Job succeeded but model output was not valid JSON (see job logs)"
 			}
-		} else {
+			ir.Status.Phase = agentv1alpha1.PhaseFailed
+			ir.Status.Message = msg
 			ir.Status.Triage = agentv1alpha1.TriageStatus{
-				InScope:    tr.InScope,
-				Suspicious: tr.Suspicious,
-				Summary:    tr.Summary,
-				Model:      tr.Model,
+				Summary:    msg,
+				Model:      firstNonEmpty(tr.Model, r.geminiModel()),
+				ParseError: true,
 			}
+			meta.SetStatusCondition(&ir.Status.Conditions, metav1.Condition{
+				Type:               agentv1alpha1.ConditionFailed,
+				Status:             metav1.ConditionTrue,
+				Reason:             "TriageResultUnreadable",
+				Message:            msg,
+				ObservedGeneration: ir.Generation,
+			})
+			return ctrl.Result{}, nil
+		}
+
+		ir.Status.Triage = agentv1alpha1.TriageStatus{
+			InScope:    tr.InScope,
+			Suspicious: tr.Suspicious,
+			Summary:    tr.Summary,
+			Model:      tr.Model,
 		}
 
 		if ir.Status.Triage.Suspicious || !ir.Status.Triage.InScope {
 			ir.Status.Phase = agentv1alpha1.PhaseRejected
-			ir.Status.Message = "Rejected by triage — see Job logs for Claude analysis"
+			ir.Status.Message = "Rejected by triage — see Job logs for Gemini analysis"
 			meta.SetStatusCondition(&ir.Status.Conditions, metav1.Condition{
 				Type:               agentv1alpha1.ConditionTriaged,
 				Status:             metav1.ConditionTrue,
@@ -188,7 +200,7 @@ func (r *IssueResolutionReconciler) reconcileTriage(ctx context.Context, ir *age
 		}
 
 		ir.Status.Phase = agentv1alpha1.PhasePendingValidation
-		ir.Status.Message = fmt.Sprintf("Triage OK. Claude summary in status + Job logs (kubectl logs job/%s -n %s). Waiting for spec.approved=true", jobName, ir.Namespace)
+		ir.Status.Message = fmt.Sprintf("Triage OK. Gemini summary in status + Job logs (kubectl logs job/%s -n %s). Waiting for spec.approved=true", jobName, ir.Namespace)
 		meta.SetStatusCondition(&ir.Status.Conditions, metav1.Condition{
 			Type:               agentv1alpha1.ConditionTriaged,
 			Status:             metav1.ConditionTrue,
@@ -242,9 +254,9 @@ func (r *IssueResolutionReconciler) reconcilePendingValidation(_ context.Context
 
 func (r *IssueResolutionReconciler) buildTriageJob(ir *agentv1alpha1.IssueResolution) (*batchv1.Job, error) {
 	image := r.triageImage()
-	secretName := r.claudeSecretName()
-	secretKey := r.claudeSecretKey()
-	model := r.claudeModel()
+	secretName := r.geminiSecretName()
+	secretKey := r.geminiSecretKey()
+	model := r.geminiModel()
 	jobName := triageJobName(ir)
 
 	job := &batchv1.Job{
@@ -279,9 +291,9 @@ func (r *IssueResolutionReconciler) buildTriageJob(ir *agentv1alpha1.IssueResolu
 								{Name: "ISSUE_AUTHOR", Value: ir.Spec.Author},
 								{Name: "ISSUE_TITLE", Value: ir.Spec.Title},
 								{Name: "ISSUE_BODY", Value: ir.Spec.Body},
-								{Name: "ANTHROPIC_MODEL", Value: model},
+								{Name: "GEMINI_MODEL", Value: model},
 								{
-									Name: "ANTHROPIC_API_KEY",
+									Name: "GEMINI_API_KEY",
 									ValueFrom: &corev1.EnvVarSource{
 										SecretKeyRef: &corev1.SecretKeySelector{
 											LocalObjectReference: corev1.LocalObjectReference{Name: secretName},
@@ -318,20 +330,28 @@ func (r *IssueResolutionReconciler) readTriageResult(ctx context.Context, ir *ag
 	for i := range pods.Items {
 		pod := &pods.Items[i]
 		for _, cs := range pod.Status.ContainerStatuses {
-			if cs.State.Terminated != nil && cs.State.Terminated.Message != "" {
-				var tr triageJobResult
-				if err := json.Unmarshal([]byte(cs.State.Terminated.Message), &tr); err != nil {
-					return triageJobResult{}, fmt.Errorf("parse termination message: %w", err)
-				}
-				if tr.Model == "" {
-					tr.Model = r.claudeModel()
-				}
-				return tr, nil
+			if cs.State.Terminated == nil {
+				continue
 			}
+			// T1: only trust successful containers (failed attempts also write termination-log).
+			if cs.State.Terminated.ExitCode != 0 {
+				continue
+			}
+			if cs.State.Terminated.Message == "" {
+				continue
+			}
+			var tr triageJobResult
+			if err := json.Unmarshal([]byte(cs.State.Terminated.Message), &tr); err != nil {
+				return triageJobResult{}, fmt.Errorf("parse termination message: %w", err)
+			}
+			if tr.Model == "" {
+				tr.Model = r.geminiModel()
+			}
+			return tr, nil
 		}
 	}
 
-	return triageJobResult{}, fmt.Errorf("no termination message on pods of job %s (check kubectl logs job/%s)", job.Name, job.Name)
+	return triageJobResult{}, fmt.Errorf("no successful termination message on pods of job %s (check kubectl logs job/%s)", job.Name, job.Name)
 }
 
 func triageJobName(ir *agentv1alpha1.IssueResolution) string {
@@ -342,28 +362,37 @@ func (r *IssueResolutionReconciler) triageImage() string {
 	if r.TriageImage != "" {
 		return r.TriageImage
 	}
-	return defaultTriageImage
+	return defaults.TriageImage
 }
 
-func (r *IssueResolutionReconciler) claudeSecretName() string {
-	if r.ClaudeSecretName != "" {
-		return r.ClaudeSecretName
+func (r *IssueResolutionReconciler) geminiSecretName() string {
+	if r.GeminiSecretName != "" {
+		return r.GeminiSecretName
 	}
-	return defaultClaudeSecretName
+	return defaults.GeminiSecretName
 }
 
-func (r *IssueResolutionReconciler) claudeSecretKey() string {
-	if r.ClaudeSecretKey != "" {
-		return r.ClaudeSecretKey
+func (r *IssueResolutionReconciler) geminiSecretKey() string {
+	if r.GeminiSecretKey != "" {
+		return r.GeminiSecretKey
 	}
-	return defaultClaudeSecretKey
+	return defaults.GeminiSecretKey
 }
 
-func (r *IssueResolutionReconciler) claudeModel() string {
-	if r.ClaudeModel != "" {
-		return r.ClaudeModel
+func (r *IssueResolutionReconciler) geminiModel() string {
+	if r.GeminiModel != "" {
+		return r.GeminiModel
 	}
-	return defaultClaudeModel
+	return defaults.GeminiModel
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // SetupWithManager sets up the controller with the Manager.

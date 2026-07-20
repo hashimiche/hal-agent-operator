@@ -2,30 +2,29 @@
 Copyright 2026 HAL.
 
 Triage worker for the local KinD POC.
-Reads issue fields from env, calls the Anthropic (Claude) API, prints the
-analysis to stdout (visible via kubectl logs on the Job pod), and writes a
-compact JSON summary to /dev/termination-log for the controller.
+Reads issue fields from env, calls the Gemini API (Google AI Studio), prints
+the analysis to stdout (kubectl logs on the Job pod), and writes a compact
+JSON summary to /dev/termination-log for the controller.
 */
 
 package main
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"strings"
 	"time"
+
+	"google.golang.org/genai"
+
+	"github.com/hashicorp-academy/hal-k8s-operator/internal/defaults"
 )
 
 const (
-	anthropicURL     = "https://api.anthropic.com/v1/messages"
-	anthropicVersion = "2023-06-01"
-	defaultModel     = "claude-haiku-4-5-20251001"
-	terminationLog   = "/dev/termination-log"
-	maxBodyRunes     = 12000
+	terminationLog = "/dev/termination-log"
+	maxBodyRunes   = 12000
 )
 
 type triageResult struct {
@@ -33,31 +32,8 @@ type triageResult struct {
 	Suspicious bool   `json:"suspicious"`
 	Summary    string `json:"summary"`
 	Model      string `json:"model"`
+	ParseError bool   `json:"parseError,omitempty"`
 	Raw        string `json:"raw,omitempty"`
-}
-
-type anthropicRequest struct {
-	Model       string    `json:"model"`
-	MaxTokens   int       `json:"max_tokens"`
-	System      string    `json:"system"`
-	Messages    []message `json:"messages"`
-	Temperature float64   `json:"temperature"`
-}
-
-type message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type anthropicResponse struct {
-	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
-	Error *struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	} `json:"error,omitempty"`
 }
 
 func main() {
@@ -67,19 +43,19 @@ func main() {
 			InScope:    false,
 			Suspicious: false,
 			Summary:    err.Error(),
-			Model:      envOr("ANTHROPIC_MODEL", defaultModel),
+			Model:      envOr("GEMINI_MODEL", defaults.GeminiModel),
 		})
 		os.Exit(1)
 	}
 }
 
 func run() error {
-	apiKey := os.Getenv("ANTHROPIC_API_KEY")
+	apiKey := os.Getenv("GEMINI_API_KEY")
 	if apiKey == "" {
-		return fmt.Errorf("ANTHROPIC_API_KEY is not set")
+		return fmt.Errorf("GEMINI_API_KEY is not set")
 	}
 
-	model := envOr("ANTHROPIC_MODEL", defaultModel)
+	model := envOr("GEMINI_MODEL", defaults.GeminiModel)
 	repo := os.Getenv("ISSUE_REPOSITORY")
 	number := os.Getenv("ISSUE_NUMBER")
 	author := os.Getenv("ISSUE_AUTHOR")
@@ -94,7 +70,7 @@ func run() error {
 	fmt.Printf("model:      %s\n", model)
 	fmt.Println("--- issue body ---")
 	fmt.Println(body)
-	fmt.Println("--- calling Claude ---")
+	fmt.Println("--- calling Gemini ---")
 
 	system := strings.TrimSpace(`
 You are the triage step of an autonomous GitHub issue agent for the HAL project
@@ -119,20 +95,23 @@ Rules:
 		repo, number, author, title, body,
 	)
 
-	rawText, err := callClaude(apiKey, model, system, user)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	rawText, err := callGemini(ctx, apiKey, model, system, user)
 	if err != nil {
 		return err
 	}
 
-	fmt.Println("--- Claude raw response ---")
+	fmt.Println("--- Gemini raw response ---")
 	fmt.Println(rawText)
 
 	result, err := parseResult(rawText, model)
 	if err != nil {
-		// Still succeed the Job with a best-effort summary so logs are useful.
 		result = triageResult{
 			InScope:    false,
 			Suspicious: false,
+			ParseError: true,
 			Summary:    "Could not parse JSON from model; see job logs for raw response",
 			Model:      model,
 			Raw:        truncateRunes(rawText, 1500),
@@ -152,60 +131,35 @@ Rules:
 	return nil
 }
 
-func callClaude(apiKey, model, system, user string) (string, error) {
-	payload := anthropicRequest{
-		Model:       model,
-		MaxTokens:   1024,
-		System:      system,
-		Temperature: 0,
-		Messages:    []message{{Role: "user", Content: user}},
-	}
-	body, err := json.Marshal(payload)
+func callGemini(ctx context.Context, apiKey, model, system, user string) (string, error) {
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  apiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("create gemini client: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, anthropicURL, bytes.NewReader(body))
+	temp := float32(0)
+	cfg := &genai.GenerateContentConfig{
+		SystemInstruction: &genai.Content{
+			Parts: []*genai.Part{{Text: system}},
+		},
+		Temperature:      &temp,
+		MaxOutputTokens:  1024,
+		ResponseMIMEType: "application/json",
+	}
+
+	resp, err := client.Models.GenerateContent(ctx, model, genai.Text(user), cfg)
 	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", apiKey)
-	req.Header.Set("anthropic-version", anthropicVersion)
-
-	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("anthropic HTTP %d: %s", resp.StatusCode, truncateRunes(string(respBody), 800))
+		return "", fmt.Errorf("gemini generate: %w", err)
 	}
 
-	var parsed anthropicResponse
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return "", fmt.Errorf("decode response: %w", err)
-	}
-	if parsed.Error != nil {
-		return "", fmt.Errorf("anthropic error %s: %s", parsed.Error.Type, parsed.Error.Message)
-	}
-
-	var texts []string
-	for _, c := range parsed.Content {
-		if c.Type == "text" {
-			texts = append(texts, c.Text)
-		}
-	}
-	if len(texts) == 0 {
+	text := resp.Text()
+	if strings.TrimSpace(text) == "" {
 		return "", fmt.Errorf("empty model content")
 	}
-	return strings.Join(texts, "\n"), nil
+	return text, nil
 }
 
 func parseResult(raw, model string) (triageResult, error) {
@@ -215,7 +169,6 @@ func parseResult(raw, model string) (triageResult, error) {
 	cleaned = strings.TrimSuffix(cleaned, "```")
 	cleaned = strings.TrimSpace(cleaned)
 
-	// If the model wrapped JSON in prose, try to extract the first {...} block.
 	if !strings.HasPrefix(cleaned, "{") {
 		start := strings.Index(cleaned, "{")
 		end := strings.LastIndex(cleaned, "}")
@@ -236,12 +189,12 @@ func parseResult(raw, model string) (triageResult, error) {
 }
 
 func writeTermination(result triageResult) error {
-	// Keep under kube termination message limit (~4Ki).
 	compact := triageResult{
 		InScope:    result.InScope,
 		Suspicious: result.Suspicious,
 		Summary:    truncateRunes(result.Summary, 1500),
 		Model:      result.Model,
+		ParseError: result.ParseError,
 	}
 	b, err := json.Marshal(compact)
 	if err != nil {

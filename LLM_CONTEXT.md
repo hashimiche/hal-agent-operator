@@ -123,10 +123,10 @@ treat `approved && PendingValidation` → transition to `Ready` then spawn Job 2
 ## Build roadmap (this repo)
 
 1. **Skeleton** — Kubebuilder init, CRD types, stub reconciler — done
-2. **KinD POC (current)** — manual CR → Job triage → Claude API → logs + `status.triage`
+2. **KinD POC (current)** — manual CR → Job triage → Gemini API → logs + `status.triage`
    - Helm chart: `charts/hal-k8s-operator`
-   - Runbook: [`docs/POC-KIND.md`](docs/POC-KIND.md)
-   - Secret `claude-api` (not Vault yet)
+   - Runbook: [`POC.md`](POC.md) · commands: `task` ([`Taskfile.yml`](Taskfile.yml))
+   - Secret `gemini-api` (not Vault yet)
 3. **HITL approve** — `spec.approved` (kubectl patch for now)
 4. **Webhook receiver** — create CR + `"agent go"` admission
 5. **Job 2 fix** — Sysbox + PR

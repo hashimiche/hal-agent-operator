@@ -130,6 +130,11 @@ type TriageStatus struct {
 	// model identifies the model used for triage (no secrets).
 	// +optional
 	Model string `json:"model,omitempty"`
+
+	// parseError is true when the Job succeeded but the model output was not usable JSON.
+	// Distinct from Rejected (business out-of-scope).
+	// +optional
+	ParseError bool `json:"parseError,omitempty"`
 }
 
 // PlanStatus points at the plan the human reviews before approval.

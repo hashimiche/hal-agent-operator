@@ -1,6 +1,5 @@
 # Default values for local KinD POC.
-
-namespace: hal-agent
+# Namespace is owned by Helm's --namespace / --create-namespace (not a chart template).
 
 image:
   repository: hal-k8s-operator
@@ -10,13 +9,17 @@ image:
 # Same image runs /manager (operator) and /triage (Job).
 triage:
   image: "" # default: image.repository:image.tag
-  model: claude-haiku-4-5-20251001
+  # Default model — keep in sync with internal/defaults.GeminiModel.
+  # Rolling alias: pinned IDs (e.g. gemini-2.5-flash) get retired for new API
+  # keys ahead of schedule and return 404. Override with a pinned ID via
+  # --set triage.model=... if you need reproducible outputs.
+  model: gemini-flash-latest
 
-# Anthropic API key for triage Jobs (POC: plain K8s Secret, not Vault yet).
-claude:
-  secretName: claude-api
-  secretKey: ANTHROPIC_API_KEY
-  # Set via --set-file or --set claude.apiKey=$ANTHROPIC_API_KEY (do not commit).
+# Gemini API key for triage Jobs (POC: plain K8s Secret, not Vault yet).
+gemini:
+  secretName: gemini-api
+  secretKey: GEMINI_API_KEY
+  # Set via --set gemini.apiKey=$GEMINI_API_KEY (do not commit).
   apiKey: ""
   # If true and apiKey is set, create the Secret from values.
   createSecret: true

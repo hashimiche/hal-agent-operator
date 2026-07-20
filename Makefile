@@ -82,14 +82,14 @@ kind-poc-image: ## Build and load the POC image into KinD
 	kind load docker-image $(IMG_POC) --name $(KIND_POC_CLUSTER)
 
 .PHONY: kind-poc-helm
-kind-poc-helm: ## Helm install/upgrade (requires ANTHROPIC_API_KEY)
-	@test -n "$$ANTHROPIC_API_KEY" || { echo "export ANTHROPIC_API_KEY first"; exit 1; }
+kind-poc-helm: ## Helm install/upgrade (requires GEMINI_API_KEY) — prefer: task kind-poc-helm
+	@test -n "$$GEMINI_API_KEY" || { echo "export GEMINI_API_KEY first"; exit 1; }
 	helm upgrade --install hal-agent ./charts/hal-k8s-operator \
 	  --namespace hal-agent --create-namespace \
 	  --set image.repository=hal-k8s-operator \
 	  --set image.tag=poc \
 	  --set image.pullPolicy=IfNotPresent \
-	  --set claude.apiKey="$$ANTHROPIC_API_KEY"
+	  --set gemini.apiKey="$$GEMINI_API_KEY"
 
 .PHONY: kind-poc
 kind-poc: kind-poc-cluster kind-poc-image kind-poc-helm ## Full KinD POC deploy (cluster + image + helm)

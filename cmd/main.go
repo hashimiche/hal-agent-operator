@@ -37,6 +37,7 @@ import (
 
 	agentv1alpha1 "github.com/hashicorp-academy/hal-k8s-operator/api/v1alpha1"
 	"github.com/hashicorp-academy/hal-k8s-operator/internal/controller"
+	"github.com/hashicorp-academy/hal-k8s-operator/internal/defaults"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -62,9 +63,9 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var triageImage string
-	var claudeSecretName string
-	var claudeSecretKey string
-	var claudeModel string
+	var geminiSecretName string
+	var geminiSecretKey string
+	var geminiModel string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -83,14 +84,14 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
-	flag.StringVar(&triageImage, "triage-image", envOr("TRIAGE_IMAGE", "hal-k8s-operator:poc"),
+	flag.StringVar(&triageImage, "triage-image", envOr("TRIAGE_IMAGE", defaults.TriageImage),
 		"Container image for the triage Job (KinD POC: same image as the operator).")
-	flag.StringVar(&claudeSecretName, "claude-secret-name", envOr("CLAUDE_SECRET_NAME", "claude-api"),
-		"Name of the Secret that holds the Anthropic API key.")
-	flag.StringVar(&claudeSecretKey, "claude-secret-key", envOr("CLAUDE_SECRET_KEY", "ANTHROPIC_API_KEY"),
-		"Key inside the Secret for the Anthropic API key.")
-	flag.StringVar(&claudeModel, "claude-model", envOr("CLAUDE_MODEL", "claude-haiku-4-5-20251001"),
-		"Anthropic model id passed to the triage Job.")
+	flag.StringVar(&geminiSecretName, "gemini-secret-name", envOr("GEMINI_SECRET_NAME", defaults.GeminiSecretName),
+		"Name of the Secret that holds the Gemini API key.")
+	flag.StringVar(&geminiSecretKey, "gemini-secret-key", envOr("GEMINI_SECRET_KEY", defaults.GeminiSecretKey),
+		"Key inside the Secret for the Gemini API key.")
+	flag.StringVar(&geminiModel, "gemini-model", envOr("GEMINI_MODEL", defaults.GeminiModel),
+		"Gemini model id passed to the triage Job.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -194,17 +195,17 @@ func main() {
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
 		TriageImage:      triageImage,
-		ClaudeSecretName: claudeSecretName,
-		ClaudeSecretKey:  claudeSecretKey,
-		ClaudeModel:      claudeModel,
+		GeminiSecretName: geminiSecretName,
+		GeminiSecretKey:  geminiSecretKey,
+		GeminiModel:      geminiModel,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "issueresolution")
 		os.Exit(1)
 	}
 	setupLog.Info("Triage Job config",
 		"image", triageImage,
-		"secret", claudeSecretName,
-		"model", claudeModel,
+		"secret", geminiSecretName,
+		"model", geminiModel,
 	)
 	// +kubebuilder:scaffold:builder
 

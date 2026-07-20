@@ -1,0 +1,119 @@
+# User-facing entry point for the POC (go-task — https://taskfile.dev).
+# The Makefile remains the internal Kubebuilder engine (manifests/generate/envtest):
+# dev tasks delegate to make, KinD tasks are self-contained.
+version: '3'
+
+vars:
+  KIND_POC_CLUSTER: hal-agent
+  IMG_POC: hal-k8s-operator:poc
+  CONTAINER_TOOL:
+    sh: command -v docker >/dev/null 2>&1 && echo docker || echo podman
+  # kind reads KIND_EXPERIMENTAL_PROVIDER ("" = docker auto-detection)
+  KIND_PROVIDER: '{{if eq .CONTAINER_TOOL "podman"}}podman{{end}}'
+
+env:
+  KIND_EXPERIMENTAL_PROVIDER: '{{.KIND_PROVIDER}}'
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+    silent: true
+
+  prereqs:
+    desc: Check required tools and the Gemini API key
+    cmds:
+      - |
+        ok=1
+        for t in {{.CONTAINER_TOOL}} kind kubectl helm go; do
+          if command -v $t >/dev/null 2>&1; then printf '%-16s OK\n' $t
+          else printf '%-16s MISSING\n' $t; ok=0; fi
+        done
+        if [ -n "$GEMINI_API_KEY" ]; then printf '%-16s OK\n' GEMINI_API_KEY
+        else printf '%-16s MISSING (export GEMINI_API_KEY=...)\n' GEMINI_API_KEY; ok=0; fi
+        echo "container tool : {{.CONTAINER_TOOL}}"
+        [ $ok -eq 1 ]
+    silent: true
+
+  kind-poc-cluster:
+    desc: Create the POC KinD cluster (idempotent)
+    cmds:
+      - |
+        if kind get clusters 2>/dev/null | grep -qx '{{.KIND_POC_CLUSTER}}'; then
+          echo "cluster {{.KIND_POC_CLUSTER}} already exists"
+        else
+          kind create cluster --name {{.KIND_POC_CLUSTER}}
+        fi
+
+  kind-poc-image:
+    desc: Build the POC image and load it into KinD (docker or podman)
+    cmds:
+      - |
+        # BuildKit-style ARGs can be empty under podman without defaults in Dockerfile.
+        if [ "{{.CONTAINER_TOOL}}" = "podman" ]; then
+          # Fully qualified name: otherwise containerd (inside KinD) cannot
+          # resolve the image referenced as "hal-k8s-operator:poc".
+          podman build --format docker -t docker.io/library/{{.IMG_POC}} .
+          tmp=$(mktemp /tmp/hal-poc-img-XXXXXX.tar)
+          podman save docker.io/library/{{.IMG_POC}} -o "$tmp"
+          kind load image-archive "$tmp" --name {{.KIND_POC_CLUSTER}}
+          rm -f "$tmp"
+        else
+          docker build -t {{.IMG_POC}} .
+          kind load docker-image {{.IMG_POC}} --name {{.KIND_POC_CLUSTER}}
+        fi
+
+  kind-poc-helm:
+    desc: Deploy the operator via Helm (requires GEMINI_API_KEY)
+    preconditions:
+      - sh: test -n "$GEMINI_API_KEY"
+        msg: 'export GEMINI_API_KEY=... first (https://aistudio.google.com/apikey)'
+    cmds:
+      - |
+        # Namespace via --create-namespace only (no Namespace object in the chart),
+        # so re-runs stay idempotent when hal-agent already exists.
+        helm upgrade --install hal-agent ./charts/hal-k8s-operator \
+          --namespace hal-agent --create-namespace \
+          --set image.repository=hal-k8s-operator \
+          --set image.tag=poc \
+          --set image.pullPolicy=IfNotPresent \
+          --set gemini.apiKey="$GEMINI_API_KEY" \
+          {{.CLI_ARGS}}
+
+  kind-poc:
+    desc: Full pipeline — cluster + image + helm
+    cmds:
+      - task: kind-poc-cluster
+      - task: kind-poc-image
+      - task: kind-poc-helm
+      - cmd: echo "Demo CR -> kubectl apply -f config/samples/agent_v1alpha1_issueresolution.yaml"
+        silent: true
+
+  kind-poc-clean:
+    desc: Remove the Helm release and the KinD cluster
+    cmds:
+      - helm uninstall hal-agent -n hal-agent || true
+      - kind delete cluster --name {{.KIND_POC_CLUSTER}}
+
+  # --- Dev (delegates to the Kubebuilder Makefile) ---
+
+  build:
+    desc: Build manager + triage binaries
+    cmds: [make build]
+
+  test:
+    desc: Unit tests (envtest)
+    cmds: [make test]
+
+  lint-fix:
+    desc: Lint with auto-fix
+    cmds: [make lint-fix]
+
+  manifests:
+    desc: Regenerate CRDs/RBAC from markers
+    cmds: [make manifests]
+
+  generate:
+    desc: Regenerate DeepCopy code
+    cmds: [make generate]
