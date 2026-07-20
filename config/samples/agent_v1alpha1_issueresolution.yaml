@@ -1,0 +1,25 @@
+apiVersion: agent.hal.dev/v1alpha1
+kind: IssueResolution
+metadata:
+  name: issue-1234
+  namespace: hal-agent
+  labels:
+    app.kubernetes.io/name: hal-k8s-operator
+    app.kubernetes.io/managed-by: kustomize
+    hal.dev/repo: hashimiche-hal
+    hal.dev/author: alice
+spec:
+  repository: hashimiche/hal
+  issueNumber: 1234
+  issueURL: https://github.com/hashimiche/hal/issues/1234
+  author: alice
+  authorAssociation: CONTRIBUTOR
+  title: "docs: typo in vault oidc skill"
+  body: |
+    The OIDC skill examples still mention the old flag name.
+    Please fix the wording and keep EXAMPLES.md in sync.
+  labels:
+    - docs
+    - bug
+  approved: false
+  maxFixAttempts: 2

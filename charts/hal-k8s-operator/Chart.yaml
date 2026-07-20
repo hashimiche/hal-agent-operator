@@ -1,0 +1,12 @@
+apiVersion: v2
+name: hal-k8s-operator
+description: HAL IssueResolution operator (KinD / local POC)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - kubernetes
+  - operator
+  - hal
+maintainers:
+  - name: HAL

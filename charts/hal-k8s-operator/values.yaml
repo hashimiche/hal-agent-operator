@@ -1,0 +1,41 @@
+# Default values for local KinD POC.
+
+namespace: hal-agent
+
+image:
+  repository: hal-k8s-operator
+  tag: poc
+  pullPolicy: IfNotPresent
+
+# Same image runs /manager (operator) and /triage (Job).
+triage:
+  image: "" # default: image.repository:image.tag
+  model: claude-haiku-4-5-20251001
+
+# Anthropic API key for triage Jobs (POC: plain K8s Secret, not Vault yet).
+claude:
+  secretName: claude-api
+  secretKey: ANTHROPIC_API_KEY
+  # Set via --set-file or --set claude.apiKey=$ANTHROPIC_API_KEY (do not commit).
+  apiKey: ""
+  # If true and apiKey is set, create the Secret from values.
+  createSecret: true
+
+operator:
+  replicaCount: 1
+  leaderElect: false
+  resources:
+    limits:
+      cpu: 500m
+      memory: 128Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+
+serviceAccount:
+  create: true
+  name: hal-k8s-operator
+
+# Install sample IssueResolution CR (false by default — apply manually).
+sample:
+  enabled: false
