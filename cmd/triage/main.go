@@ -57,14 +57,21 @@ func run() error {
 	title := os.Getenv("ISSUE_TITLE")
 	body := truncateRunes(os.Getenv("ISSUE_BODY"), maxBodyRunes)
 
+	// Redact-and-send: strip HTML comments and base64 blobs once, up front. The
+	// deterministic prefilter below runs on the RAW title/body (hidden payloads
+	// must still trip the hard rules), but everything we print to the Job logs or
+	// send to Gemini uses the sanitized copies so real secrets are never emitted.
+	safeTitle, nTitle := sanitizeForModel(title)
+	safeBody, nBody := sanitizeForModel(body)
+
 	fmt.Println("=== HAL triage job (POC) ===")
 	fmt.Printf("repository: %s\n", repo)
 	fmt.Printf("issue:      #%s\n", number)
 	fmt.Printf("author:     %s\n", author)
-	fmt.Printf("title:      %s\n", title)
+	fmt.Printf("title:      %s\n", safeTitle)
 	fmt.Printf("model:      %s\n", model)
-	fmt.Println("--- issue body ---")
-	fmt.Println(body)
+	fmt.Println("--- issue body (secrets/base64 redacted) ---")
+	fmt.Println(safeBody)
 
 	// Deterministic prefilter: known injection / exfil patterns skip Gemini
 	// so the model cannot clear a hard suspicious hit. No API key required.
@@ -110,10 +117,8 @@ Rules:
 - summary: 2-4 sentences in English explaining the decision and a high-level plan.
 `)
 
-	// Redact-and-send: strip HTML comments and base64 blobs from what the model
-	// sees. We never decode; the model cannot act on content it never receives.
-	safeTitle, nTitle := sanitizeForModel(title)
-	safeBody, nBody := sanitizeForModel(body)
+	// safeTitle/safeBody were sanitized up front (see run() top). We never decode;
+	// the model cannot act on content it never receives.
 	if nTitle+nBody > 0 {
 		fmt.Printf("--- prefilter: %d hidden/encoded block(s) redacted before model call ---\n", nTitle+nBody)
 	}

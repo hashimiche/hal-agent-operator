@@ -8,7 +8,10 @@ Deterministic prefilter for the triage worker. Two responsibilities, kept apart:
     caller skips the model entirely.
   - sanitizeForModel: redact-and-send. HTML comments and base64 blobs are removed
     from the text BEFORE it reaches the model. Nothing is ever decoded — the model
-    cannot act on content it never receives.
+    cannot act on content it never receives. Base64 detection is whitespace-aware
+    (chunking a blob across spaces/newlines does not defeat it) and signal-based
+    (needs +/= or a high uppercase ratio) so hex commit SHAs and version strings
+    survive for the model to reason about.
 */
 
 package main
@@ -30,6 +33,15 @@ type scanFinding struct {
 const (
 	redactedBlobPlaceholder    = "[base64 blob redacted by prefilter - not decoded]"
 	redactedCommentPlaceholder = "[html comment removed by prefilter]"
+
+	// A base64 "block" (whitespace stripped) must reach this many chars before it
+	// is redacted. ~40 covers a typical encoded injection phrase (~44 chars) while
+	// sparing short IDs and inline tokens.
+	base64MinLen = 40
+	// Minimum uppercase fraction (of non-space chars) for an all-alnum block to be
+	// treated as base64 rather than prose. Random base64 is ~40% uppercase; prose
+	// (incl. Title Case) sits well below this. Blocks with +/= skip the ratio test.
+	base64UpperRatio = 0.25
 )
 
 var (
@@ -41,10 +53,6 @@ var (
 	// Redact-and-send patterns: stripped from model input, never decoded.
 	reHTMLComment   = regexp.MustCompile(`(?is)<!--.*?-->`)
 	reRedactDataURI = regexp.MustCompile(`(?i)data:[^;\s]+;base64,[A-Za-z0-9+/=]+`)
-	// Threshold 40 covers a typical encoded injection phrase (~44 chars) while
-	// sparing short IDs. Long hashes / kubeconfig data are redacted too - harmless
-	// for triage, and a bonus: real secrets are not shipped to the third-party API.
-	reRedactBlob = regexp.MustCompile(`[A-Za-z0-9+/_-]{40,}={0,2}`)
 )
 
 // Case-insensitive substring rules. Prefer multi-word / high-signal phrases
@@ -114,6 +122,9 @@ func normalizeForMatch(s string) string {
 // scanSuspicious inspects title+body for hostile patterns. Order is stable.
 func scanSuspicious(title, body string) []scanFinding {
 	text := title + "\n" + body
+	// Normalized copy (zero-width stripped, NFKC, lowercased) so that trivial
+	// evasion (zero-width, fullwidth) still matches the substring and shell rules.
+	norm := normalizeForMatch(text)
 
 	var findings []scanFinding
 	seen := map[string]bool{}
@@ -127,19 +138,17 @@ func scanSuspicious(title, body string) []scanFinding {
 		findings = append(findings, scanFinding{Rule: rule, Detail: detail})
 	}
 
-	// Regex detectors run on the raw text (zero-width must still fire).
+	// Zero-width must fire on the raw text (normalization would strip it).
 	if reZeroWidth.MatchString(text) {
 		add("zero_width", "zero-width / invisible Unicode characters")
 	}
-	if reShellExfil.MatchString(text) {
+	// Shell exfil runs on raw AND normalized so fullwidth "ｃｕｒｌ" is caught too.
+	if reShellExfil.MatchString(text) || reShellExfil.MatchString(norm) {
 		add("shell_exfil", "curl/wget referencing env or secret-like variables")
 	}
 
-	// Substring rules run on normalized text so trivial evasion (zero-width,
-	// fullwidth) still matches.
-	lower := normalizeForMatch(text)
 	for _, p := range suspiciousSubstrings {
-		if strings.Contains(lower, p.sub) {
+		if strings.Contains(norm, p.sub) {
 			add(p.rule, `matched "`+p.sub+`"`)
 		}
 	}
@@ -149,10 +158,10 @@ func scanSuspicious(title, body string) []scanFinding {
 
 // sanitizeForModel removes content the model must not act on before issue text
 // is sent to Gemini: HTML comments (hidden in the GitHub UI) and base64 blobs
-// (data: URIs, long runs). Nothing is decoded - payloads are removed, not
-// inspected. Legit K8s/Vault base64 (kubeconfig, Secret data, certs) is
-// neutralized the same way and never shipped to the third-party API. Returns
-// the cleaned text and the number of substitutions.
+// (data: URIs, long runs, incl. runs chunked across whitespace). Nothing is
+// decoded - payloads are removed, not inspected. Legit K8s/Vault base64
+// (kubeconfig, Secret data, certs) is neutralized the same way and never shipped
+// to the third-party API. Returns the cleaned text and the number of substitutions.
 func sanitizeForModel(s string) (string, int) {
 	n := 0
 	repl := func(placeholder string) func(string) string {
@@ -163,8 +172,108 @@ func sanitizeForModel(s string) (string, int) {
 	}
 	s = reHTMLComment.ReplaceAllStringFunc(s, repl(redactedCommentPlaceholder))
 	s = reRedactDataURI.ReplaceAllStringFunc(s, repl(redactedBlobPlaceholder))
-	s = reRedactBlob.ReplaceAllStringFunc(s, repl(redactedBlobPlaceholder))
-	return s, n
+	s, m := redactBase64Blocks(s)
+	return s, n + m
+}
+
+// isBase64Byte reports whether b is in the standard base64 alphabet. base64url
+// (`-`/`_`) is intentionally excluded: `-`/`_` are common in prose (hyphenation,
+// snake_case) and would cause false positives; standard base64 is what pasted
+// kubeconfig / Secret data / encoded injections use.
+func isBase64Byte(b byte) bool {
+	switch {
+	case b >= 'A' && b <= 'Z', b >= 'a' && b <= 'z', b >= '0' && b <= '9':
+		return true
+	case b == '+', b == '/', b == '=':
+		return true
+	default:
+		return false
+	}
+}
+
+func isSpaceByte(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\r' || b == '\n'
+}
+
+// redactBase64Blocks finds maximal spans of base64-alphabet characters
+// (whitespace between chunks is tolerated so splitting a blob across lines does
+// not evade detection) and redacts each span that looks like encoded data. A
+// span qualifies when, ignoring whitespace, it is at least base64MinLen chars
+// AND either contains +/= or has a high uppercase ratio. Prose (lowercase words,
+// Title Case, ALL CAPS, hex SHAs, version strings) does not qualify and passes
+// through untouched. All ASCII, so byte indexing is safe.
+func redactBase64Blocks(s string) (string, int) {
+	var b strings.Builder
+	n := 0
+	i := 0
+	for i < len(s) {
+		if !isBase64Byte(s[i]) {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		// Extend a span over base64 chars, absorbing interior whitespace only when
+		// it is followed by more base64 chars (trailing whitespace is left out).
+		start, end := i, i
+		j := i
+		for j < len(s) {
+			if isBase64Byte(s[j]) {
+				j++
+				end = j
+				continue
+			}
+			if isSpaceByte(s[j]) {
+				k := j
+				for k < len(s) && isSpaceByte(s[k]) {
+					k++
+				}
+				if k < len(s) && isBase64Byte(s[k]) {
+					j = k
+					continue
+				}
+			}
+			break
+		}
+		span := s[start:end]
+		if looksBase64Block(span) {
+			b.WriteString(redactedBlobPlaceholder)
+			n++
+		} else {
+			b.WriteString(span)
+		}
+		i = end
+	}
+	return b.String(), n
+}
+
+// looksBase64Block decides whether a base64-alphabet span (possibly containing
+// interior whitespace) is encoded data rather than natural-language prose.
+func looksBase64Block(span string) bool {
+	var nonSpace, upper, lower, special int
+	for i := 0; i < len(span); i++ {
+		switch b := span[i]; {
+		case b >= 'A' && b <= 'Z':
+			upper++
+			nonSpace++
+		case b >= 'a' && b <= 'z':
+			lower++
+			nonSpace++
+		case b >= '0' && b <= '9':
+			nonSpace++
+		case b == '+' || b == '/' || b == '=':
+			special++
+			nonSpace++
+		}
+	}
+	if nonSpace < base64MinLen {
+		return false
+	}
+	if special > 0 {
+		return true
+	}
+	// No +/=: require a genuine mixed-case, high-uppercase signal so prose
+	// (lowercase, Title Case, ALL CAPS, hex SHAs) is left alone.
+	return upper > 0 && lower > 0 && float64(upper) >= base64UpperRatio*float64(nonSpace)
 }
 
 func formatHeuristicSummary(findings []scanFinding) string {
