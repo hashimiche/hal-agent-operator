@@ -28,3 +28,6 @@ go.work
 
 # Kubeconfig might contain secrets
 *.kubeconfig
+
+# Local CRs generated from a GitHub issue (gh|yq pipeline)
+CR_*.yaml

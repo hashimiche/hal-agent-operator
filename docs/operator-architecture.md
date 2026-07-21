@@ -1,101 +1,114 @@
-# Architecture de l'Opérateur AI K8s (Projet HAL)
+# AI K8s Operator Architecture (HAL project)
 
-> **Status:** Design · **Scope:** ce repo (`hal-k8s-operator`)  
-> Complète [`hal/docs/agent-architecture.md`](../../hal/docs/agent-architecture.md) §16 (Option 4).  
-> Ce doc fixe le **contrat de l'opérateur** et le workflow HITL opérationnel.
+> **Status:** Design · **Scope:** this repo (`hal-k8s-operator`)
+> Complements [`hal/docs/agent-architecture.md`](../../hal/docs/agent-architecture.md) §16 (Option 4).
+> This document fixes the **operator contract** and the operational HITL workflow.
 
 ---
 
-## 1. Modèle d'architecture globale
+## 1. Overall architecture model
 
-Approche événementielle + ressources Kubernetes éphémères, pattern Controller/Operator :
+Event-driven approach + ephemeral Kubernetes resources, Controller/Operator pattern:
 
-- L'opérateur maintient l'état via une Custom Resource (CR) de manière déclarative.
-- L'opérateur crée des Jobs Kubernetes (Job 1 triage, Job 2 fix) et les surveille nativement via une `OwnerReference`.
-- La boucle de réconciliation est déclenchée quand un Job se termine (`Succeeded` / `Failed`) — pas besoin de webhooks internes pour détecter les changements d'état des Jobs.
+- The operator holds state declaratively through a Custom Resource (CR).
+- The operator creates Kubernetes Jobs (Job 1 triage, Job 2 fix) and watches them natively through an `OwnerReference`.
+- The reconcile loop is triggered when a Job terminates (`Succeeded` / `Failed`) — no internal webhooks needed to detect Job state changes.
 
 ```mermaid
 flowchart TD
-    GH[GitHub issue / comment] --> WR[Webhook Receiver]
-    WR -->|create / patch CR| CR[IssueResolution]
+    GH[GitHub issue / comment] --> GHA[GitHub Action]
+    GHA -->|kubectl apply / patch CR| CR[IssueResolution]
     CTRL[Operator reconcile] -.watch CR + owned Jobs.-> CR
     CTRL -->|phase needs triage| J1[Job 1: triage]
     J1 -->|OwnerRef + termination-log| CTRL
     CTRL -->|await human| WAIT[phase = PendingValidation]
-    WR -->|comment "agent go" + CODEOWNERS OK| CR
-    CTRL -->|phase = Ready| J2[Job 2: fix under Sysbox]
+    GHA -->|comment "agent go" + CODEOWNERS OK| CR
+    CTRL -->|phase = Ready| J2[Job 2: fix]
     J2 -->|OwnerRef + result| CTRL
     CTRL --> PR[phase = PROpen]
 ```
 
 ---
 
-## 2. Qui fait quoi (frontière opérateur)
+## 2. Who does what (operator boundary)
 
-| Composant | Responsabilité | Dans ce repo ? |
+| Component | Responsibility | In this repo? |
 |---|---|---|
-| **Webhook Receiver** | HMAC validate ; crée la CR à l'ouverture d'issue ; sur `issue_comment` `"agent go"`, vérifie CODEOWNERS via Vault+GitHub, puis patch CR → `ready` | Non (Deployment séparé ; peut vivre plus tard dans un package adjacent) |
-| **Operator (controller)** | Reconcile `IssueResolution` : spawn/surveille Jobs, avance `status.phase`, jamais de secrets | **Oui — cœur de ce repo** |
-| **Job 1 (triage)** | Analyse texte-seul, commente le plan, label `agent: pending-validation`, écrit le diagnostic, meurt | Image / entrypoint définis ici ; exécuté comme Job |
-| **Job 2 (fix)** | Génère / teste sous Sysbox, push + PR ; secrets via init-container Vault uniquement | Idem |
-| **Vault** | K8s auth + secrets dynamiques GitHub / LLM | Infra cluster, hors opérateur |
-| **Humain** | Gate #1 : commentaire `"agent go"` ; gate #2 : review/merge PR | — |
+| **GitHub Action** | On `issues.opened`: create the CR. On `issue_comment` `"agent go"`: check CODEOWNERS, then patch `spec.approved=true`. Authenticates to the cluster via OIDC / Workload Identity Federation | No (workflows live in the target repo) |
+| **Operator (controller)** | Reconcile `IssueResolution`: spawn/watch Jobs, advance `status.phase`, never handle secrets | **Yes — the core of this repo** |
+| **Job 1 (triage)** | Text-only analysis, comments the plan, applies label `agent: pending-validation`, writes the diagnosis, exits | Image / entrypoint defined here; runs as a Job |
+| **Job 2 (fix)** | Generates code, runs the tests, pushes + opens PR; secrets via K8s Secret (POC) then Vault init-container | Same |
+| **Vault** | K8s auth + dynamic GitHub / LLM secrets | Cluster infra, outside the operator |
+| **Human** | Gate #1: `"agent go"` comment; gate #2: PR review/merge | — |
 
-**Règle d'or pour l'opérateur :** il ne parle jamais à GitHub ni à Vault. Il lit/écrit uniquement des CRs et des Jobs. Les Jobs et le webhook receiver sont les seuls clients Vault/GitHub.
+**Golden rule for the operator:** it never talks to GitHub or Vault. It only reads/writes CRs and Jobs. The Jobs and the GitHub Action are the only Vault/GitHub clients.
 
----
-
-## 3. Workflow Human-in-the-Loop (HITL)
-
-### Étape 1 — Création et triage (Job 1)
-
-1. Ouverture d'issue → webhook → création de la CR (`metadata.name = issue-<n>` = dedup).
-2. L'opérateur lance **Job 1** (triage).
-3. Job 1 analyse l'issue en **texte seul** (pas d'exécution de code), commente le plan d'action, applique le label GitHub `agent: pending-validation`, écrit le diagnostic (ex. `/dev/termination-log`), et meurt.
-4. L'opérateur détecte la fin du Job (`OwnerReference` → reconcile), lit le diagnostic, met à jour `status` de la CR → phase **PendingValidation**.
-
-### Étape 2 — Barrière humaine
-
-- L'issue reste en attente. **Aucun pod idle.**
-- Un humain vérifie le plan et, s'il est sûr, commente : `"agent go"`.
-
-### Étape 3 — Contrôle d'admission (Webhook Receiver — hors opérateur)
-
-1. GitHub envoie `issue_comment` vers le cluster.
-2. Le receiver valide la signature HMAC.
-3. Il s'auth auprès de Vault, interroge l'API GitHub (token lecture) pour vérifier que l'auteur est dans `CODEOWNERS`.
-4. Si OK → patch CR vers **Ready** (ex. label/status `agent: ready` / `spec.approved` / `status.phase`).
-
-### Étape 4 — Exécution Sysbox (Job 2)
-
-1. L'opérateur voit `Ready` et lance **Job 2**.
-2. Job 2 génère le code, exécute et teste sous **Sysbox**.
-3. Push branche + ouverture PR (validation humaine finale = gate #2).
-4. L'opérateur observe la fin du Job → `status.phase = PROpen` (+ `status.prURL`).
+> **Decision (2026-07-20) — GitHub Action instead of a Webhook Receiver.**
+> The original design called for a publicly exposed receiver Deployment with
+> HMAC validation. A GitHub Action makes that whole component unnecessary: no
+> ingress, no TLS, no HMAC secret rotation, no service to maintain. The
+> direction of the flow inverts (the runner calls the cluster instead of GitHub
+> pushing to it), which moves the security problem from "authenticate the
+> caller" to "give the runner minimal rights" — see §6.
 
 ---
 
-## 4. Contrat de la CR `IssueResolution`
+## 3. Human-in-the-Loop (HITL) workflow
+
+### Step 1 — Creation and triage (Job 1)
+
+1. Issue opened → GitHub Action → CR created (`metadata.name = issue-<n>` = dedup).
+2. The operator launches **Job 1** (triage).
+3. Job 1 analyzes the issue **text-only** (no code execution), comments the action plan, applies the GitHub label `agent: pending-validation`, writes the diagnosis (e.g. `/dev/termination-log`), and exits.
+4. The operator detects Job completion (`OwnerReference` → reconcile), reads the diagnosis, updates the CR `status` → phase **PendingValidation**.
+
+### Step 2 — Human barrier
+
+- The issue waits. **No idle pod.**
+- A human reviews the plan and, if confident, comments: `"agent go"`.
+
+### Step 3 — Admission control (GitHub Action — outside the operator)
+
+1. The comment triggers the `issue_comment` workflow in the target repo.
+2. The Action checks that the comment body is `"agent go"` and that its author is in `CODEOWNERS` (reading the file + the `author_association` carried by the event).
+3. It authenticates to GCP via **OIDC / Workload Identity Federation** — no long-lived secret stored in the repo — and obtains a short-lived GKE credential.
+4. If OK → patch the CR: `spec.approved=true` (+ `approvedBy`, `approvedAt`). The operator itself performs the transition to **Ready**.
+
+### Step 4 — Execution (Job 2)
+
+1. The operator sees `Ready` and launches **Job 2**.
+2. Job 2 generates the code and runs the target repo's test suite (see §6 for the isolation model chosen).
+3. Pushes the branch + opens the PR (final human validation = gate #2).
+4. The operator observes Job completion → `status.phase = PROpen` (+ `status.execution.prURL`).
+
+---
+
+## 4. `IssueResolution` CR contract
 
 ```yaml
-apiVersion: hal.dev/v1alpha1
+apiVersion: agent.hal.dev/v1alpha1
 kind: IssueResolution
 metadata:
-  name: issue-1234          # = issue number → dedup etcd
+  name: issue-1234          # = issue number → etcd dedup
 spec:
   issueNumber: 1234
-  # Desired state écrite par le webhook receiver (pas par l'opérateur)
-  approved: false           # true après "agent go" + CODEOWNERS OK
+  # Desired state written by the GitHub Action (not by the operator)
+  approved: false           # true after "agent go" + CODEOWNERS OK
 status:
-  phase: Triage             # voir machine d'états ci-dessous
+  phase: Triage             # see state machine below
   triage: { inScope: true, suspicious: false, summary: "..." }
-  planCommentURL: ""
-  prURL: ""
+  plan:
+    commentURL: ""
+  execution:
+    prURL: ""
   conditions: []            # Triaged, AwaitingApproval, Ready, PROpen, Failed
   observedGeneration: 1
 ```
 
-### Machine d'états (`status.phase`)
+> The authoritative shape is [`api/v1alpha1/issueresolution_types.go`](../api/v1alpha1/issueresolution_types.go);
+> the snippet above is illustrative and trimmed.
+
+### State machine (`status.phase`)
 
 ```
 Triage → PendingValidation → Ready → Executing → PROpen → Done
@@ -104,81 +117,166 @@ Triage → PendingValidation → Ready → Executing → PROpen → Done
             Rejected           Failed
 ```
 
-| Phase | Qui y entre | Action opérateur |
+| Phase | Who enters it | Operator action |
 |---|---|---|
-| `Triage` | CR créée | Créer Job 1 s'il n'existe pas ; attendre |
-| `PendingValidation` | Job 1 Succeeded + in-scope | **Requeue / no-op** tant que `spec.approved == false` |
-| `Ready` | Webhook receiver (après `"agent go"`) | Créer Job 2 |
-| `Executing` | Job 2 lancé | Surveiller Job 2 |
-| `PROpen` | Job 2 Succeeded | Écrire `status.prURL` ; attendre merge humain (optionnel) |
+| `Triage` | CR created | Create Job 1 if absent; wait |
+| `PendingValidation` | Job 1 Succeeded + in-scope | **Requeue / no-op** while `spec.approved == false` |
+| `Ready` | Operator, after `spec.approved=true` set by the GitHub Action (`"agent go"`) | Create Job 2 |
+| `Executing` | Job 2 launched | Watch Job 2 |
+| `PROpen` | Job 2 Succeeded | Write `status.execution.prURL`; wait for human merge (optional) |
 | `Rejected` | Job 1 out-of-scope / suspicious | Stop |
-| `Failed` | Job Failed / diagnostic invalide | Stop + condition `Failed` |
+| `Failed` | Job Failed / invalid diagnosis | Stop + `Failed` condition |
 
-Transitions **écrites par l'opérateur** : tout sauf `Ready` (écrit par le webhook receiver via `spec.approved` / patch phase).
-
----
-
-## 5. Contrat reconcile (ce que l'opérateur doit faire)
-
-À chaque reconcile, pour une `IssueResolution` :
-
-1. Lire `status.phase` + Jobs owned (`OwnerReference`).
-2. Prendre **le plus petit pas** vers l'état désiré (level-triggered, idempotent).
-3. Ne jamais relancer un Job déjà `Succeeded` pour la même phase.
-4. Sur Job `Failed` → `status.phase = Failed` + condition lisible.
-5. Sur Job 1 `Succeeded` → parser le résultat (termination-log / annotation / ConfigMap résultat) → `PendingValidation` ou `Rejected`.
-6. Si `PendingValidation` et `!spec.approved` → return + requeueAfter (pas de pod qui attend).
-7. Si `spec.approved` (ou phase `Ready`) → créer Job 2 si absent.
-8. Sur Job 2 `Succeeded` → `PROpen` + `prURL`.
-
-**Ce que l'opérateur ne fait jamais :**
-
-- Appeler GitHub ou Vault
-- Contenir des secrets dans le `spec` / `status`
-- Faire tourner du code généré dans le process controller
-- Idler un worker pendant la barrière humaine
+Every `status.phase` transition is **written by the operator**. The GitHub Action
+never writes to `status`: it only touches `spec` (CR creation, then
+`spec.approved`). That is what keeps the state machine level-triggered and
+idempotent.
 
 ---
 
-## 6. Sécurité (contraintes que l'opérateur doit respecter)
+## 5. Reconcile contract (what the operator must do)
 
-### Secrets (JIT & K8s auth) — côté Jobs, pas controller
+On every reconcile, for one `IssueResolution`:
 
-- Jobs s'auth Vault via `auth/kubernetes` (JWT du ServiceAccount).
-- Tokens GitHub dynamiques (`github/` engine), TTL court (~5 min), scopes minimaux :
-  - Job 1 : `issues:write` (comment + label)
-  - Job 2 : `contents:write` + `pull_requests:write` (push + PR) — jamais merge/admin
-- **Aucun secret dans la CR** (lisible par RBAC `get` dans etcd).
+1. Read `status.phase` + owned Jobs (`OwnerReference`).
+2. Take the **smallest step** toward the desired state (level-triggered, idempotent).
+3. Never re-launch a Job already `Succeeded` for the same phase.
+4. On Job `Failed` → `status.phase = Failed` + a readable condition.
+5. On Job 1 `Succeeded` → parse the result (termination-log / annotation / result ConfigMap) → `PendingValidation` or `Rejected`.
+6. If `PendingValidation` and `!spec.approved` → return + requeueAfter (no pod waiting).
+7. If `spec.approved` (or phase `Ready`) → create Job 2 if absent.
+8. On Job 2 `Succeeded` → `PROpen` + `prURL`.
 
-### Isolation Job 2
+**What the operator never does:**
 
-- `runtimeClassName: sysbox-runc` — Docker/KinD sans `--privileged`.
-- **NetworkPolicy :** egress = GitHub + endpoint LLM uniquement. **Pas** d'accès à l'API Kubernetes ni à Vault depuis le conteneur principal.
-- **Init-container** : auth Vault → écrit le token GitHub (+ clé LLM si besoin) dans un volume partagé → le conteneur principal n'a plus accès Vault.
-- Limites CPU/RAM ; user namespaces Sysbox pour les workloads imbriqués.
-
-### Mitigation prompt-injection
-
-- Job 1 = analyse seule, zéro exécution de code → un plan aberrant est bloqué par le CODEOWNER (`"agent go"`).
-- Job 2 n'existe qu'après gate humaine cryptographiquement + hiérarchiquement validée.
-- Le modèle ne voit jamais le token GitHub publish (séparation temporelle init vs run, ou phase model puis phase publish).
+- Call GitHub or Vault
+- Hold secrets in `spec` / `status`
+- Run generated code inside the controller process
+- Idle a worker during the human barrier
 
 ---
 
-## 7. Surfaces hors scope immédiat de l'opérateur
+## 6. Security (constraints the operator must respect)
 
-À construire **après** le squelette controller + CRD + reconcile stub :
+### Secrets (JIT & K8s auth) — Job side, not controller
 
-- Webhook Receiver (HMAC + CODEOWNERS + patch CR)
-- Images Job 1 / Job 2 + `CodeFixProvider`
-- Manifests Vault / NetworkPolicy / Sysbox RuntimeClass
-- Dashboard (optionnel) — le gate primaire ici est le commentaire GitHub `"agent go"`, pas une UI
+- Jobs authenticate to Vault via `auth/kubernetes` (ServiceAccount JWT).
+- Dynamic GitHub tokens (`github/` engine), short TTL (~5 min), minimal scopes:
+  - Job 1: `issues:write` (comment + label)
+  - Job 2: `contents:write` + `pull_requests:write` (push + PR) — never merge/admin
+- **No secret in the CR** (readable through RBAC `get` in etcd).
+
+### Job 2 isolation
+
+> **Decision (2026-07-20) — no Sysbox for the POC.**
+> Sysbox answers one precise need: running **nested containers** without
+> `--privileged` (docker build, testcontainers, KinD in a pod). As long as Job 2
+> is limited to `git`, an LLM call and a test suite that runs **in-process**
+> (`go test`), that need does not exist. And the cost is real: node-level
+> installation through a DaemonSet, Ubuntu node images with a compatible kernel,
+> and **impossible on GKE Autopilot**.
+>
+> Verified on the actual target (2026-07-20): the `hal` test suite is plain Go —
+> `httptest`, no `testcontainers`, no Docker invocation, ~37 s wall clock.
+>
+> `runtimeClassName` stays a **configurable** Helm value (empty by default): it
+> gets wired back the day Job 2 must launch containers.
+
+What Sysbox would not have solved anyway: Job 2 runs **LLM-written code**, i.e.
+untrusted code, whatever the runtime. Dropping Sysbox is not free — its user
+namespaces would have mitigated a kernel escape. But that is not the realistic
+threat here: the crown jewel in that pod is the **GitHub token**, and the likely
+attack is generated code reading an env var and exfiltrating it over HTTP.
+Sysbox does nothing against that; the egress allowlist does.
+
+The boundary chosen for the POC is therefore a hardened pod, defense in depth:
+
+- `securityContext`: non-root, `allowPrivilegeEscalation: false`,
+  `capabilities.drop: [ALL]`, `seccompProfile: RuntimeDefault`,
+  `readOnlyRootFilesystem` except an `emptyDir` workspace.
+- **NetworkPolicy:** egress = GitHub + LLM endpoint only. **No** access to the Kubernetes API or to Vault from the main container.
+- Dedicated ServiceAccount with **no rights at all** on the Kubernetes API, `automountServiceAccountToken: false`.
+- CPU/RAM limits **and `activeDeadlineSeconds`** (protection against a runaway test loop — size it against the ~37 s baseline above; ~300 s leaves margin).
+- **Init-container**: Vault auth → writes the GitHub token (+ LLM key if needed) into a shared volume → the main container no longer has Vault access. *(Vault phase; in the POC, a K8s Secret mounted directly.)*
+
+The day the target to fix needs Docker for its tests is the day the Sysbox
+question reopens — alongside the alternatives of a dedicated node or an external
+runner.
+
+### GitHub Action trust boundary
+
+The Action holds write access to the cluster: this is the new attack surface
+introduced in §2, and it must be kept tight.
+
+- RBAC restricted to `create` / `get` / `patch` on `issueresolutions` in the `hal-agent` namespace **only**. Nothing else — no cluster-wide `list`, no `secrets`, no `pods`.
+- Auth through **OIDC / Workload Identity Federation**, with a condition on the repo *and* the branch/environment — no service-account JSON key stored as a repo secret.
+- The `issue_comment` workflow must never trust the comment body beyond strict equality with `"agent go"`, nor `author_association` alone: the CODEOWNERS check is what carries authority.
+- The Action must write to `spec` only — never to `status` (cf. §4).
+
+### Prompt-injection mitigation
+
+- Job 1 = analysis only, zero code execution → an aberrant plan is blocked by the CODEOWNER (`"agent go"`).
+- Job 2 only exists after a human gate validated both cryptographically and hierarchically.
+- The model never sees the publish GitHub token (temporal separation init vs run, or model phase then publish phase).
 
 ---
 
-## 8. Premier livrable opérateur (slice A → B)
+## 7. Surfaces outside the operator's immediate scope
 
-1. **Slice A — Skeleton :** module Go + Kubebuilder, CRD `IssueResolution`, reconciler stub.
-2. **Slice B — State machine :** transitions ci-dessus avec Jobs factices (busybox) + OwnerReference.
-3. **Slice C — Vrais Jobs :** brancher images triage/fix + termination-log + conditions riches.
-)
+To be built **after** the controller skeleton + CRD + reconcile stub:
+
+- GitHub Action workflows (CR creation + CODEOWNERS + `spec.approved` patch)
+- Job 1 / Job 2 images + `CodeFixProvider`
+- Vault / NetworkPolicy manifests
+- Dashboard (optional) — the primary gate here is the GitHub `"agent go"` comment, not a UI
+
+---
+
+## 8. Build order
+
+Slices A (skeleton) and B (state machine + real triage) are **done** — POC
+validated on KinD on 2026-07-19, see [`POC.md`](../POC.md).
+
+Next, in this order (the dependencies matter):
+
+1. **Fork `hal` + inject bugs.** This is the test fixture: Job 2 cannot be
+   developed without a real target repo, a known bug, and a failing test. Aim
+   for 3 bugs of increasing difficulty — typo/off-by-one, logic bug in an
+   isolated function, bug spanning two files (that last one will show where the
+   single-file approach breaks).
+2. **Job 2 (fix) on KinD.** The big chunk, but it is developed entirely locally
+   — see §9.
+3. **GitHub Action workflows.** CR creation on `issues.opened`, approval on
+   `issue_comment`.
+4. **GKE last.** It is only needed to make the cluster reachable by the GitHub
+   runner. It adds nothing to the fix logic, and it costs money while iterating.
+
+---
+
+## 9. Job 2 (fix) breakdown
+
+Two very uneven halves.
+
+**Controller side (~200 lines)** — a structural mirror of `reconcileTriage`:
+
+- `Ready` → create the fix Job if absent (naming `issue-<n>-fix-<attempt>`).
+- `Executing` → watch; requeue.
+- `PROpen` → read the result from the termination-log, fill `status.execution`.
+- Retry driven by `spec.maxFixAttempts` — a field already present in the CRD but
+  **never read** by the controller today.
+
+**`cmd/fix` binary side (the real work)**: clone → LLM prompt with code context →
+apply the change → run the tests → commit/push → open the PR → write the URL to
+the termination-log.
+
+> **Model output format: full file contents, not a unified diff.**
+> LLM-produced diffs carry line numbers and context that do not match, and
+> `git apply` fails constantly. Asking for the **full contents of the corrected
+> file**, on a single targeted file, is token-verbose but reliable — which is the
+> criterion that matters for a demonstrable POC. Moving to multi-file / diff is a
+> later evolution.
+
+**Job 2 secrets in the POC**: Vault is a later phase; meanwhile, a K8s Secret
+holding a fine-grained PAT restricted to the fork alone, scopes
+`contents:write` + `pull_requests:write`. Same pattern as the existing
+`gemini-api` Secret in the chart.

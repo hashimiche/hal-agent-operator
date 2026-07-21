@@ -8,8 +8,8 @@ CRs through a HITL state machine (triage → human `"agent go"` → fix Job → 
 ## Description
 
 The controller watches `IssueResolution` custom resources and advances
-`status.phase`. It never talks to GitHub or Vault — those are the webhook
-receiver and Jobs.
+`status.phase`. It never talks to GitHub or Vault — those are the GitHub Action
+and the Jobs.
 
 **Current POC (KinD):** apply a CR by hand → controller creates a **triage Job**
 that calls **Gemini** → analysis in Job logs + `status.triage`.  

@@ -13,7 +13,7 @@ triage:
   # Rolling alias: pinned IDs (e.g. gemini-2.5-flash) get retired for new API
   # keys ahead of schedule and return 404. Override with a pinned ID via
   # --set triage.model=... if you need reproducible outputs.
-  model: gemini-flash-latest
+  model: gemini-3.1-flash-lite
 
 # Gemini API key for triage Jobs (POC: plain K8s Secret, not Vault yet).
 gemini:

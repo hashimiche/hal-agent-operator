@@ -14,9 +14,9 @@ it watches the API for CRs (and owned Jobs), and runs **level-triggered**
 | Component | Role | This repo? |
 |---|---|---|
 | Operator (controller) | Watch CRs / Jobs → reconcile phases | **Yes** |
-| Webhook receiver | HMAC + create CR / `"agent go"` → `spec.approved` | Later (adjacent) |
+| GitHub Action | Create CR on `issues.opened` / `"agent go"` → `spec.approved` | Later (workflows in the target repo) |
 | Job 1 triage | Text-only analysis, plan comment, label | Image later |
-| Job 2 fix | Sysbox: code + test + PR | Image later |
+| Job 2 fix | Code + test + PR (no Sysbox — see below) | Image later |
 | Dashboard | Nice-to-have; talks only via CRs | Deferred |
 
 ## Core rules
@@ -24,8 +24,8 @@ it watches the API for CRs (and owned Jobs), and runs **level-triggered**
 1. **No secrets in CRs** (etcd is RBAC-readable). Secrets = Vault → Jobs only.
 2. **Controller never calls GitHub/Vault** — only creates/watches Jobs + patches status.
 3. **One CR per issue** (`metadata.name = issue-<number>`) = dedup lock.
-4. **Human gate #1:** GitHub comment `"agent go"` by a CODEOWNER → webhook sets
-   `spec.approved=true`. No idle pod while waiting.
+4. **Human gate #1:** GitHub comment `"agent go"` by a CODEOWNER → a GitHub
+   Action sets `spec.approved=true`. No idle pod while waiting.
 5. **Human gate #2:** PR review/merge on GitHub. Never auto-merge.
 6. Jobs are linked with **OwnerReference** so Job completion re-triggers reconcile.
 
@@ -82,8 +82,8 @@ status:
 
 | Field | Writer |
 |---|---|
-| `spec.*` (issue snapshot) | Webhook receiver on `issues.opened` |
-| `spec.approved` / `approvedBy` / `approvedAt` | Webhook receiver on `"agent go"` + CODEOWNERS |
+| `spec.*` (issue snapshot) | GitHub Action on `issues.opened` |
+| `spec.approved` / `approvedBy` / `approvedAt` | GitHub Action on `"agent go"` + CODEOWNERS |
 | `status.*` | Operator (from Job results) |
 
 ### Do not put in the CR
@@ -117,21 +117,46 @@ Triage → PendingValidation → Ready → Executing → PROpen → Done
 | `Failed` | Job failed or invalid result |
 | `Done` | Optional terminal after human merge |
 
-`Ready` is entered when the webhook sets `spec.approved=true` (operator may also
-treat `approved && PendingValidation` → transition to `Ready` then spawn Job 2).
+`Ready` is entered when the GitHub Action sets `spec.approved=true` (operator may
+also treat `approved && PendingValidation` → transition to `Ready` then spawn
+Job 2). The Action only ever writes `spec` — never `status`.
 
 ## Build roadmap (this repo)
 
 1. **Skeleton** — Kubebuilder init, CRD types, stub reconciler — done
-2. **KinD POC (current)** — manual CR → Job triage → Gemini API → logs + `status.triage`
+2. **KinD POC** — manual CR → Job triage → Gemini API → logs + `status.triage` — **done (2026-07-19)**
    - Helm chart: `charts/hal-k8s-operator`
    - Runbook: [`POC.md`](POC.md) · commands: `task` ([`Taskfile.yml`](Taskfile.yml))
    - Secret `gemini-api` (not Vault yet)
-3. **HITL approve** — `spec.approved` (kubectl patch for now)
-4. **Webhook receiver** — create CR + `"agent go"` admission
-5. **Job 2 fix** — Sysbox + PR
-6. **Vault K8s auth** — replace plain Secret
-7. **Dashboard** — nice-to-have, later
+3. **HITL approve** — `spec.approved` (kubectl patch) — done
+4. **Fork `hal` + inject bugs (current)** — the test fixture Job 2 is developed
+   against. Comes *before* Job 2: you cannot build the fix loop without a real
+   target repo, a known bug, and a failing test.
+5. **Job 2 fix** — controller phases `Ready`/`Executing`/`PROpen` + `cmd/fix`
+   binary. Developed entirely on KinD. No Sysbox — see
+   [`docs/operator-architecture.md`](docs/operator-architecture.md) §6 and §9.
+6. **GitHub Action** — create CR on `issues.opened`, `"agent go"` approval on
+   `issue_comment`. Replaces the webhook receiver from the original design.
+7. **GKE** — last. Only needed so the GitHub runner can reach the cluster; adds
+   nothing to the fix logic and costs money while iterating.
+8. **Vault K8s auth** — replace plain Secret
+9. **Dashboard** — nice-to-have, later
+
+### Decisions that superseded the original design (2026-07-20)
+
+- **GitHub Action instead of a webhook receiver Deployment.** Kills the ingress,
+  TLS and HMAC secret rotation. Flow inverts: the runner calls the cluster
+  instead of GitHub pushing to it, so the security problem moves from
+  "authenticate the caller" to "give the runner minimal rights" (OIDC / Workload
+  Identity Federation + RBAC scoped to `issueresolutions` in `hal-agent` only).
+- **No Sysbox for Job 2.** Sysbox solves nested containers without
+  `--privileged`; a `go test` suite runs in-process and does not need it. It also
+  costs node-level installation and is impossible on GKE Autopilot.
+  `runtimeClassName` stays a Helm value (empty by default) for the day nested
+  containers are actually required.
+- **Fix output format: full file contents, not a unified diff.** LLM diffs fail
+  to apply reliably; whole-file rewrite of a single targeted file is verbose but
+  works.
 
 ## Conventions
 

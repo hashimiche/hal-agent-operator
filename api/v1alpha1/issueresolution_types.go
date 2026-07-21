@@ -47,7 +47,7 @@ const (
 )
 
 // IssueResolutionSpec defines the desired state of IssueResolution.
-// Written by the webhook receiver (issue snapshot + human approval gate).
+// Written by the GitHub Action (issue snapshot + human approval gate).
 // Must never contain secrets.
 type IssueResolutionSpec struct {
 	// repository is the GitHub repo in "owner/name" form.
@@ -91,7 +91,7 @@ type IssueResolutionSpec struct {
 	// +optional
 	CreatedAt *metav1.Time `json:"createdAt,omitempty"`
 
-	// approved is the human gate. Set true by the webhook receiver after a
+	// approved is the human gate. Set true by the GitHub Action after a
 	// CODEOWNER posts the comment "agent go".
 	// +optional
 	Approved bool `json:"approved,omitempty"`
@@ -149,7 +149,7 @@ type PlanStatus struct {
 	Summary string `json:"summary,omitempty"`
 }
 
-// ExecutionStatus tracks Job 2 (fix under Sysbox) and the resulting PR.
+// ExecutionStatus tracks Job 2 (fix) and the resulting PR.
 type ExecutionStatus struct {
 	// attempt is the current fix attempt (1-based).
 	// +optional

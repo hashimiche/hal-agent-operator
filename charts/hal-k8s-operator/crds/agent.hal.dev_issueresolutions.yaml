@@ -62,7 +62,7 @@ spec:
             properties:
               approved:
                 description: |-
-                  approved is the human gate. Set true by the webhook receiver after a
+                  approved is the human gate. Set true by the GitHub Action after a
                   CODEOWNER posts the comment "agent go".
                 type: boolean
               approvedAt:
