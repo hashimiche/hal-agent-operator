@@ -116,8 +116,9 @@ var _ = Describe("IssueResolution Controller", func() {
 					Name:      resourceName + "-triage-ok",
 					Namespace: resourceNamespace,
 					Labels: map[string]string{
-						labelIssueResolution: resourceName,
-						labelJobRole:         jobRoleTriage,
+						labelIssueResolution:  resourceName,
+						labelJobRole:          jobRoleTriage,
+						labelJobControllerUID: string(job.UID),
 					},
 				},
 				Spec: corev1.PodSpec{
@@ -233,8 +234,9 @@ var _ = Describe("IssueResolution Controller", func() {
 					Name:      resourceName + "-triage-fail",
 					Namespace: resourceNamespace,
 					Labels: map[string]string{
-						labelIssueResolution: resourceName,
-						labelJobRole:         jobRoleTriage,
+						labelIssueResolution:  resourceName,
+						labelJobRole:          jobRoleTriage,
+						labelJobControllerUID: string(job.UID),
 					},
 				},
 				Spec: corev1.PodSpec{
@@ -258,8 +260,9 @@ var _ = Describe("IssueResolution Controller", func() {
 					Name:      resourceName + "-triage-ok2",
 					Namespace: resourceNamespace,
 					Labels: map[string]string{
-						labelIssueResolution: resourceName,
-						labelJobRole:         jobRoleTriage,
+						labelIssueResolution:  resourceName,
+						labelJobRole:          jobRoleTriage,
+						labelJobControllerUID: string(job.UID),
 					},
 				},
 				Spec: corev1.PodSpec{
