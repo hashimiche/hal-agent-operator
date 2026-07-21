@@ -1,5 +1,9 @@
 # GROK_PLAN — remaining tasks for the triage POC
 
+> **Superseded by [`LLM_PLAN.md`](LLM_PLAN.md)** — the canonical, live plan of
+> record (merges T0–T7 here + the T8–T18 roadmap). Resume work from there; this
+> file is kept for the detailed history of the triage POC.
+>
 > **Status (2026-07-19): ALL TASKS DONE — POC validated end to end.**
 > T0–T6 done by agent, `task test` green (controller coverage 74.6%).
 > T7 run by the user: sample CR → triage Job → Gemini analysis in Job logs,

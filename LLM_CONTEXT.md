@@ -123,6 +123,10 @@ Job 2). The Action only ever writes `spec` — never `status`.
 
 ## Build roadmap (this repo)
 
+> **Live tracker / plan of record:** [`LLM_PLAN.md`](LLM_PLAN.md) (tasks
+> T0–T18, resume from the first unchecked task). The list below is the
+> high-level narrative.
+
 1. **Skeleton** — Kubebuilder init, CRD types, stub reconciler — done
 2. **KinD POC** — manual CR → Job triage → Gemini API → logs + `status.triage` — **done (2026-07-19)**
    - Helm chart: `charts/hal-k8s-operator`

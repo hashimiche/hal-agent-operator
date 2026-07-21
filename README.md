@@ -14,7 +14,7 @@ and the Jobs.
 **Current POC (KinD):** apply a CR by hand → controller creates a **triage Job**
 that calls **Gemini** → analysis in Job logs + `status.triage`.  
 Step-by-step runbook: [`POC.md`](POC.md). Command entry point: `task` ([`Taskfile.yml`](Taskfile.yml)).
-Remaining/completed agent tasks: [`GROK_PLAN.md`](GROK_PLAN.md). Helm chart: `charts/hal-k8s-operator`.
+Plan of record (resume here): [`LLM_PLAN.md`](LLM_PLAN.md) (triage POC history: [`GROK_PLAN.md`](GROK_PLAN.md)). Helm chart: `charts/hal-k8s-operator`.
 
 ## Getting Started
 
