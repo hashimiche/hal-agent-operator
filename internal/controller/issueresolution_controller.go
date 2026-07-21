@@ -45,6 +45,11 @@ const (
 	labelIssueResolution = "hal.dev/issueresolution"
 	labelJobRole         = "hal.dev/job-role"
 	jobRoleTriage        = "triage"
+
+	// labelJobControllerUID is the label the Job controller sets on Pods it owns
+	// (batch.kubernetes.io/controller-uid). Filtering on it scopes readTriageResult
+	// to pods of the current Job, not a stale/recreated Job that shared the same name.
+	labelJobControllerUID = "batch.kubernetes.io/controller-uid"
 )
 
 // IssueResolutionReconciler reconciles a IssueResolution object.
@@ -320,8 +325,9 @@ func (r *IssueResolutionReconciler) readTriageResult(ctx context.Context, ir *ag
 	if err := r.List(ctx, &pods,
 		client.InNamespace(ir.Namespace),
 		client.MatchingLabels{
-			labelIssueResolution: ir.Name,
-			labelJobRole:         jobRoleTriage,
+			labelIssueResolution:  ir.Name,
+			labelJobRole:          jobRoleTriage,
+			labelJobControllerUID: string(job.UID),
 		},
 	); err != nil {
 		return triageJobResult{}, err
