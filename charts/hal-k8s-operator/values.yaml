@@ -10,9 +10,10 @@ image:
 triage:
   image: "" # default: image.repository:image.tag
   # Default model — keep in sync with internal/defaults.GeminiModel.
-  # Rolling alias: pinned IDs (e.g. gemini-2.5-flash) get retired for new API
-  # keys ahead of schedule and return 404. Override with a pinned ID via
-  # --set triage.model=... if you need reproducible outputs.
+  # Pinned id (not the rolling gemini-flash-latest alias): the alias caused
+  # intermittent model-unavailability errors, so we pin for stability and bump
+  # this manually as newer Flash-Lite versions ship. Override per-install with
+  # --set triage.model=... if needed.
   model: gemini-3.1-flash-lite
 
 # Gemini API key for triage Jobs (POC: plain K8s Secret, not Vault yet).

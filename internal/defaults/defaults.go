@@ -19,11 +19,12 @@ limitations under the License.
 package defaults
 
 // GeminiModel is the default Google AI Studio model for triage Jobs.
-// The rolling alias tracks the current Flash model: pinned IDs get retired
-// for new API keys before their announced shutdown (gemini-2.5-flash
-// started returning 404 for new users on 2026-07-09).
-// Helm values.yaml may override via --set triage.model=...
-const GeminiModel = "gemini-flash-latest"
+// Deliberately a PINNED id, not the rolling "gemini-flash-latest" alias: the
+// alias caused intermittent model-unavailability errors, so we pin for
+// stability and bump this manually as newer Flash-Lite versions ship.
+// Keep in sync with charts/hal-k8s-operator/values.yaml (triage.model), which
+// Helm passes to the operator via --gemini-model.
+const GeminiModel = "gemini-3.1-flash-lite"
 
 // GeminiSecretName is the default Secret name holding the API key.
 const GeminiSecretName = "gemini-api"
