@@ -57,7 +57,7 @@ type IssueResolutionSpec struct {
 
 	// issueNumber is the GitHub issue number. CR name should be issue-<number>.
 	// +kubebuilder:validation:Minimum=1
-	IssueNumber int `json:"issueNumber"`
+	IssueNumber int32 `json:"issueNumber"`
 
 	// issueURL is the canonical GitHub issue URL.
 	// +optional
@@ -169,7 +169,7 @@ type ExecutionStatus struct {
 
 	// prNumber is the GitHub PR number.
 	// +optional
-	PRNumber int `json:"prNumber,omitempty"`
+	PRNumber int32 `json:"prNumber,omitempty"`
 }
 
 // IssueResolutionStatus defines the observed state of IssueResolution.
