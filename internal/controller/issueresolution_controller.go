@@ -42,9 +42,12 @@ const (
 	pendingApprovalRequeue = 30 * time.Second
 	jobPollRequeue         = 10 * time.Second
 
-	labelIssueResolution = "hal.dev/issueresolution"
-	labelJobRole         = "hal.dev/job-role"
-	jobRoleTriage        = "triage"
+	labelIssueResolution  = "hal.dev/issueresolution"
+	labelJobRole          = "hal.dev/job-role"
+	jobRoleTriage         = "triage"
+	jobRoleFix            = "fix"
+	defaultMaxFixAttempts = int32(2) // fallback if spec.MaxFixAttempts == nil
+	fixWorkDir            = "/workspace"
 
 	// labelJobControllerUID is the label the Job controller sets on Pods it owns
 	// (batch.kubernetes.io/controller-uid). Filtering on it scopes readTriageResult
@@ -53,19 +56,25 @@ const (
 )
 
 // IssueResolutionReconciler reconciles a IssueResolution object.
-// POC: creates a triage Job that calls Gemini; result is in Job logs (+ termination-log).
+// POC: creates triage/fix Jobs that call Gemini; results are in Job logs (+ termination-log).
 type IssueResolutionReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 
 	// TriageImage is the container image for Job 1 (same image as operator in KinD POC).
 	TriageImage string
+	// FixImage is the container image for Job 2 (needs Go toolchain; separate from distroless).
+	FixImage string
 	// GeminiSecretName holds the Gemini API key.
 	GeminiSecretName string
 	// GeminiSecretKey is the key inside the Secret.
 	GeminiSecretKey string
-	// GeminiModel is passed to the triage Job as GEMINI_MODEL.
+	// GeminiModel is passed to triage/fix Jobs as GEMINI_MODEL.
 	GeminiModel string
+	// GitHubSecretName holds the fine-grained PAT for Job 2 (clone/push/PR).
+	GitHubSecretName string
+	// GitHubSecretKey is the key inside that Secret.
+	GitHubSecretKey string
 }
 
 type triageJobResult struct {
@@ -74,6 +83,15 @@ type triageJobResult struct {
 	Summary    string `json:"summary"`
 	Model      string `json:"model"`
 	ParseError bool   `json:"parseError,omitempty"`
+}
+
+// fixJobResult mirrors what /fix writes to the termination-log.
+type fixJobResult struct {
+	PRURL    string `json:"prURL"`
+	PRNumber int32  `json:"prNumber"`
+	Branch   string `json:"branch"`
+	Attempt  int32  `json:"attempt"`
+	Error    string `json:"error,omitempty"`
 }
 
 // +kubebuilder:rbac:groups=agent.hal.dev,resources=issueresolutions,verbs=get;list;watch;create;update;patch;delete
@@ -108,10 +126,10 @@ func (r *IssueResolutionReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		result, err = r.reconcileTriage(ctx, &ir)
 	case agentv1alpha1.PhasePendingValidation:
 		result, err = r.reconcilePendingValidation(ctx, &ir)
-	case agentv1alpha1.PhaseReady, agentv1alpha1.PhaseExecuting,
-		agentv1alpha1.PhasePROpen, agentv1alpha1.PhaseDone:
-		ir.Status.Message = "POC stops after triage; Job 2 not wired"
-		result = ctrl.Result{}
+	case agentv1alpha1.PhaseReady, agentv1alpha1.PhaseExecuting, agentv1alpha1.PhasePROpen:
+		result, err = r.reconcileFix(ctx, &ir)
+	case agentv1alpha1.PhaseDone:
+		result = ctrl.Result{} // terminal, no-op
 	case agentv1alpha1.PhaseRejected, agentv1alpha1.PhaseFailed:
 		result = ctrl.Result{}
 	default:
@@ -161,7 +179,7 @@ func (r *IssueResolutionReconciler) reconcileTriage(ctx context.Context, ir *age
 	if job.Status.Succeeded > 0 {
 		tr, termErr := r.readTriageResult(ctx, ir, &job)
 		if termErr != nil || tr.ParseError {
-			msg := "Triage result unreadable"
+			var msg string
 			if termErr != nil {
 				msg = fmt.Sprintf("Triage Job succeeded but could not read result: %v (see job logs)", termErr)
 			} else {
@@ -217,7 +235,7 @@ func (r *IssueResolutionReconciler) reconcileTriage(ctx context.Context, ir *age
 			Type:               agentv1alpha1.ConditionAwaitingApproval,
 			Status:             metav1.ConditionTrue,
 			Reason:             "PendingAgentGo",
-			Message:            "Set spec.approved=true to continue (Job 2 not in POC)",
+			Message:            "Set spec.approved=true to continue",
 			ObservedGeneration: ir.Generation,
 		})
 		return ctrl.Result{RequeueAfter: pendingApprovalRequeue}, nil
@@ -246,7 +264,7 @@ func (r *IssueResolutionReconciler) reconcilePendingValidation(_ context.Context
 		return ctrl.Result{RequeueAfter: pendingApprovalRequeue}, nil
 	}
 	ir.Status.Phase = agentv1alpha1.PhaseReady
-	ir.Status.Message = "Approved — POC ends here (no Job 2 yet)"
+	ir.Status.Message = "Approved — ready for fix Job"
 	meta.SetStatusCondition(&ir.Status.Conditions, metav1.Condition{
 		Type:               agentv1alpha1.ConditionAwaitingApproval,
 		Status:             metav1.ConditionFalse,
@@ -254,7 +272,266 @@ func (r *IssueResolutionReconciler) reconcilePendingValidation(_ context.Context
 		Message:            ir.Status.Message,
 		ObservedGeneration: ir.Generation,
 	})
+	// Requeue so reconcileFix runs deterministically on the next pass (cluster).
+	return ctrl.Result{RequeueAfter: time.Second}, nil
+}
+
+func (r *IssueResolutionReconciler) reconcileFix(ctx context.Context, ir *agentv1alpha1.IssueResolution) (ctrl.Result, error) {
+	// Terminal: PR already open — strong idempotence, never relaunch.
+	if ir.Status.Phase == agentv1alpha1.PhasePROpen {
+		return ctrl.Result{}, nil
+	}
+
+	attempt := ir.Status.Execution.Attempt
+	if attempt == 0 {
+		attempt = 1
+	}
+	maxAttempts := defaultMaxFixAttempts
+	if ir.Spec.MaxFixAttempts != nil {
+		maxAttempts = *ir.Spec.MaxFixAttempts
+	}
+	jobName := fixJobName(ir, attempt)
+	branch := fixBranchName(ir, attempt)
+
+	var job batchv1.Job
+	err := r.Get(ctx, client.ObjectKey{Namespace: ir.Namespace, Name: jobName}, &job)
+
+	if apierrors.IsNotFound(err) {
+		// Only create from Ready (guard against recreating after TTL cleanup of a finished Job).
+		if ir.Status.Phase != agentv1alpha1.PhaseReady && ir.Status.Execution.JobName != "" {
+			return ctrl.Result{}, nil
+		}
+		newJob, buildErr := r.buildFixJob(ir, attempt, branch)
+		if buildErr != nil {
+			return ctrl.Result{}, buildErr
+		}
+		if createErr := r.Create(ctx, newJob); createErr != nil {
+			return ctrl.Result{}, createErr
+		}
+
+		ir.Status.Phase = agentv1alpha1.PhaseExecuting
+		ir.Status.Execution.Attempt = attempt
+		ir.Status.Execution.JobName = jobName
+		ir.Status.Execution.Branch = branch
+		ir.Status.Message = fmt.Sprintf("Fix Job %s created (attempt %d/%d)", jobName, attempt, maxAttempts)
+		meta.SetStatusCondition(&ir.Status.Conditions, metav1.Condition{
+			Type:               agentv1alpha1.ConditionExecuting,
+			Status:             metav1.ConditionTrue,
+			Reason:             "JobCreated",
+			Message:            ir.Status.Message,
+			ObservedGeneration: ir.Generation,
+		})
+		return ctrl.Result{RequeueAfter: jobPollRequeue}, nil
+	}
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
+	if job.Status.Succeeded > 0 {
+		fr, termErr := r.readFixResult(ctx, ir, &job)
+		if termErr != nil || fr.PRURL == "" {
+			return r.handleFixFailure(ir, attempt, maxAttempts,
+				fmt.Sprintf("Fix Job succeeded but result unreadable: %v", termErr))
+		}
+		ir.Status.Phase = agentv1alpha1.PhasePROpen
+		ir.Status.Execution = agentv1alpha1.ExecutionStatus{
+			Attempt:  attempt,
+			JobName:  jobName,
+			Branch:   fr.Branch,
+			PRURL:    fr.PRURL,
+			PRNumber: fr.PRNumber,
+		}
+		ir.Status.Message = fmt.Sprintf("PR opened: %s", fr.PRURL)
+		meta.SetStatusCondition(&ir.Status.Conditions, metav1.Condition{
+			Type:               agentv1alpha1.ConditionPROpen,
+			Status:             metav1.ConditionTrue,
+			Reason:             "PROpened",
+			Message:            fr.PRURL,
+			ObservedGeneration: ir.Generation,
+		})
+		return ctrl.Result{}, nil
+	}
+
+	if job.Status.Failed > 0 {
+		return r.handleFixFailure(ir, attempt, maxAttempts,
+			fmt.Sprintf("Fix Job %s failed", jobName))
+	}
+
+	ir.Status.Phase = agentv1alpha1.PhaseExecuting
+	ir.Status.Message = fmt.Sprintf("Fix Job %s running… (attempt %d/%d)", jobName, attempt, maxAttempts)
+	return ctrl.Result{RequeueAfter: jobPollRequeue}, nil
+}
+
+func (r *IssueResolutionReconciler) handleFixFailure(ir *agentv1alpha1.IssueResolution, attempt, maxAttempts int32, msg string) (ctrl.Result, error) {
+	if attempt < maxAttempts {
+		ir.Status.Execution.Attempt = attempt + 1
+		ir.Status.Phase = agentv1alpha1.PhaseReady
+		ir.Status.Message = fmt.Sprintf("%s — retrying (attempt %d/%d)", msg, attempt+1, maxAttempts)
+		return ctrl.Result{RequeueAfter: time.Second}, nil
+	}
+	ir.Status.Phase = agentv1alpha1.PhaseFailed
+	ir.Status.Message = fmt.Sprintf("%s — max attempts (%d) exhausted", msg, maxAttempts)
+	meta.SetStatusCondition(&ir.Status.Conditions, metav1.Condition{
+		Type:               agentv1alpha1.ConditionFailed,
+		Status:             metav1.ConditionTrue,
+		Reason:             "FixAttemptsExhausted",
+		Message:            ir.Status.Message,
+		ObservedGeneration: ir.Generation,
+	})
 	return ctrl.Result{}, nil
+}
+
+func (r *IssueResolutionReconciler) buildFixJob(ir *agentv1alpha1.IssueResolution, attempt int32, branch string) (*batchv1.Job, error) {
+	image := r.fixImage()
+	geminiSecret := r.geminiSecretName()
+	geminiKey := r.geminiSecretKey()
+	githubSecret := r.githubSecretName()
+	githubKey := r.githubSecretKey()
+	model := r.geminiModel()
+	jobName := fixJobName(ir, attempt)
+
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      jobName,
+			Namespace: ir.Namespace,
+			Labels: map[string]string{
+				labelIssueResolution: ir.Name,
+				labelJobRole:         jobRoleFix,
+			},
+		},
+		Spec: batchv1.JobSpec{
+			BackoffLimit:            ptr.To(int32(0)),
+			ActiveDeadlineSeconds:   ptr.To(int64(600)),
+			TTLSecondsAfterFinished: ptr.To(int32(3600)),
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						labelIssueResolution: ir.Name,
+						labelJobRole:         jobRoleFix,
+					},
+				},
+				Spec: corev1.PodSpec{
+					RestartPolicy: corev1.RestartPolicyNever,
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: ptr.To(true),
+						RunAsUser:    ptr.To(int64(65532)),
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							Name:    jobRoleFix,
+							Image:   image,
+							Command: []string{"/" + jobRoleFix},
+							SecurityContext: &corev1.SecurityContext{
+								AllowPrivilegeEscalation: ptr.To(false),
+								ReadOnlyRootFilesystem:   ptr.To(true),
+								Capabilities: &corev1.Capabilities{
+									Drop: []corev1.Capability{"ALL"},
+								},
+							},
+							Env: []corev1.EnvVar{
+								{Name: "ISSUE_REPOSITORY", Value: ir.Spec.Repository},
+								{Name: "ISSUE_NUMBER", Value: fmt.Sprintf("%d", ir.Spec.IssueNumber)},
+								{Name: "ISSUE_TITLE", Value: ir.Spec.Title},
+								{Name: "ISSUE_BODY", Value: ir.Spec.Body},
+								{Name: "TRIAGE_SUMMARY", Value: ir.Status.Triage.Summary},
+								{Name: "GEMINI_MODEL", Value: model},
+								{
+									Name: "GEMINI_API_KEY",
+									ValueFrom: &corev1.EnvVarSource{
+										SecretKeyRef: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: geminiSecret},
+											Key:                  geminiKey,
+										},
+									},
+								},
+								{
+									Name: "GITHUB_TOKEN",
+									ValueFrom: &corev1.EnvVarSource{
+										SecretKeyRef: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: githubSecret},
+											Key:                  githubKey,
+										},
+									},
+								},
+								{Name: "BRANCH_NAME", Value: branch},
+								{Name: "FIX_ATTEMPT", Value: fmt.Sprintf("%d", attempt)},
+								{Name: "WORKDIR", Value: fixWorkDir},
+								{Name: "HOME", Value: fixWorkDir},
+								{Name: "GOCACHE", Value: fixWorkDir + "/.cache"},
+								{Name: "GOMODCACHE", Value: fixWorkDir + "/gomod"},
+								{Name: "GOPATH", Value: fixWorkDir + "/go"},
+								{Name: "TMPDIR", Value: fixWorkDir + "/tmp"},
+							},
+							VolumeMounts: []corev1.VolumeMount{
+								{Name: "workspace", MountPath: fixWorkDir},
+							},
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "workspace",
+							VolumeSource: corev1.VolumeSource{
+								EmptyDir: &corev1.EmptyDirVolumeSource{},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if err := controllerutil.SetControllerReference(ir, job, r.Scheme); err != nil {
+		return nil, err
+	}
+	return job, nil
+}
+
+func (r *IssueResolutionReconciler) readFixResult(ctx context.Context, ir *agentv1alpha1.IssueResolution, job *batchv1.Job) (fixJobResult, error) {
+	var pods corev1.PodList
+	if err := r.List(ctx, &pods,
+		client.InNamespace(ir.Namespace),
+		client.MatchingLabels{
+			labelIssueResolution:  ir.Name,
+			labelJobRole:          jobRoleFix,
+			labelJobControllerUID: string(job.UID),
+		},
+	); err != nil {
+		return fixJobResult{}, err
+	}
+
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		for _, cs := range pod.Status.ContainerStatuses {
+			if cs.State.Terminated == nil {
+				continue
+			}
+			// T1: only trust successful containers (failed attempts also write termination-log).
+			if cs.State.Terminated.ExitCode != 0 {
+				continue
+			}
+			if cs.State.Terminated.Message == "" {
+				continue
+			}
+			var fr fixJobResult
+			if err := json.Unmarshal([]byte(cs.State.Terminated.Message), &fr); err != nil {
+				return fixJobResult{}, fmt.Errorf("parse termination message: %w", err)
+			}
+			return fr, nil
+		}
+	}
+
+	return fixJobResult{}, fmt.Errorf("no successful termination message on pods of job %s (check kubectl logs job/%s)", job.Name, job.Name)
+}
+
+func fixJobName(ir *agentv1alpha1.IssueResolution, attempt int32) string {
+	return fmt.Sprintf("%s-fix-%d", ir.Name, attempt)
+}
+
+func fixBranchName(ir *agentv1alpha1.IssueResolution, attempt int32) string {
+	return fmt.Sprintf("bugfix/issue-%d-attempt-%d", ir.Spec.IssueNumber, attempt)
 }
 
 func (r *IssueResolutionReconciler) buildTriageJob(ir *agentv1alpha1.IssueResolution) (*batchv1.Job, error) {
@@ -293,9 +570,9 @@ func (r *IssueResolutionReconciler) buildTriageJob(ir *agentv1alpha1.IssueResolu
 					},
 					Containers: []corev1.Container{
 						{
-							Name:    "triage",
+							Name:    jobRoleTriage,
 							Image:   image,
-							Command: []string{"/triage"},
+							Command: []string{"/" + jobRoleTriage},
 							SecurityContext: &corev1.SecurityContext{
 								AllowPrivilegeEscalation: ptr.To(false),
 								ReadOnlyRootFilesystem:   ptr.To(true),
@@ -403,6 +680,27 @@ func (r *IssueResolutionReconciler) geminiModel() string {
 		return r.GeminiModel
 	}
 	return defaults.GeminiModel
+}
+
+func (r *IssueResolutionReconciler) fixImage() string {
+	if r.FixImage != "" {
+		return r.FixImage
+	}
+	return defaults.FixImage
+}
+
+func (r *IssueResolutionReconciler) githubSecretName() string {
+	if r.GitHubSecretName != "" {
+		return r.GitHubSecretName
+	}
+	return defaults.GitHubSecretName
+}
+
+func (r *IssueResolutionReconciler) githubSecretKey() string {
+	if r.GitHubSecretKey != "" {
+		return r.GitHubSecretKey
+	}
+	return defaults.GitHubSecretKey
 }
 
 func firstNonEmpty(vals ...string) string {

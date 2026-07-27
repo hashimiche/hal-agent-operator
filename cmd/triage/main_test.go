@@ -17,7 +17,6 @@ limitations under the License.
 package main
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -87,25 +86,5 @@ func TestParseResult(t *testing.T) {
 				t.Fatalf("model=%q", got.Model)
 			}
 		})
-	}
-}
-
-func TestTruncateRunes(t *testing.T) {
-	t.Parallel()
-
-	if got := truncateRunes("short", 10); got != "short" {
-		t.Fatalf("short unchanged: %q", got)
-	}
-
-	long := strings.Repeat("a", 20)
-	got := truncateRunes(long, 5)
-	if got != "aaaaa…" {
-		t.Fatalf("got %q", got)
-	}
-
-	multi := "éééééé"
-	got = truncateRunes(multi, 3)
-	if got != "ééé…" {
-		t.Fatalf("multibyte cut mid-rune avoided: %q", got)
 	}
 }

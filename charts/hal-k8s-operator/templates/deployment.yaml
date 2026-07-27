@@ -32,9 +32,12 @@ spec:
             - --health-probe-bind-address=:8081
             - --metrics-bind-address=0
             - --triage-image={{ include "hal-k8s-operator.triageImage" . }}
+            - --fix-image={{ include "hal-k8s-operator.fixImage" . }}
             - --gemini-secret-name={{ .Values.gemini.secretName }}
             - --gemini-secret-key={{ .Values.gemini.secretKey }}
             - --gemini-model={{ .Values.triage.model }}
+            - --github-secret-name={{ .Values.github.secretName }}
+            - --github-secret-key={{ .Values.github.secretKey }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

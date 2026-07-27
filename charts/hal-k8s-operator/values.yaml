@@ -16,13 +16,26 @@ triage:
   # --set triage.model=... if needed.
   model: gemini-3.1-flash-lite
 
-# Gemini API key for triage Jobs (POC: plain K8s Secret, not Vault yet).
+# Fix Job image (separate: needs Go toolchain; not distroless).
+fix:
+  image: "hal-k8s-operator-fix:poc"
+
+# Gemini API key for triage/fix Jobs (POC: plain K8s Secret, not Vault yet).
 gemini:
   secretName: gemini-api
   secretKey: GEMINI_API_KEY
   # Set via --set gemini.apiKey=$GEMINI_API_KEY (do not commit).
   apiKey: ""
   # If true and apiKey is set, create the Secret from values.
+  createSecret: true
+
+# GitHub fine-grained PAT for fix Jobs (clone/push/PR on the fork only).
+# Scopes: contents:write + pull_requests:write. Never merge/admin.
+github:
+  secretName: github-pat
+  secretKey: GITHUB_TOKEN
+  # Set via --set github.token=$GITHUB_TOKEN (do not commit).
+  token: ""
   createSecret: true
 
 operator:

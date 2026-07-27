@@ -17,9 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"google.golang.org/genai"
-
 	"github.com/hashicorp-academy/hal-k8s-operator/internal/defaults"
+	"github.com/hashicorp-academy/hal-k8s-operator/internal/gemini"
 )
 
 const (
@@ -55,7 +54,7 @@ func run() error {
 	number := os.Getenv("ISSUE_NUMBER")
 	author := os.Getenv("ISSUE_AUTHOR")
 	title := os.Getenv("ISSUE_TITLE")
-	body := truncateRunes(os.Getenv("ISSUE_BODY"), maxBodyRunes)
+	body := gemini.TruncateRunes(os.Getenv("ISSUE_BODY"), maxBodyRunes)
 
 	// Redact-and-send: strip HTML comments and base64 blobs once, up front. The
 	// deterministic prefilter below runs on the RAW title/body (hidden payloads
@@ -86,7 +85,8 @@ func run() error {
 			Summary:    formatHeuristicSummary(findings),
 			Model:      "heuristic",
 		}
-		return finishTriage(result)
+		finishTriage(result)
+		return nil
 	}
 
 	apiKey := os.Getenv("GEMINI_API_KEY")
@@ -131,7 +131,7 @@ Rules:
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	rawText, err := callGemini(ctx, apiKey, model, system, user)
+	rawText, err := gemini.Call(ctx, apiKey, model, system, user, gemini.CallOptions{})
 	if err != nil {
 		return err
 	}
@@ -147,15 +147,16 @@ Rules:
 			ParseError: true,
 			Summary:    "Could not parse JSON from model; see job logs for raw response",
 			Model:      model,
-			Raw:        truncateRunes(rawText, 1500),
+			Raw:        gemini.TruncateRunes(rawText, 1500),
 		}
 		fmt.Fprintf(os.Stderr, "warn: %v\n", err)
 	}
 
-	return finishTriage(result)
+	finishTriage(result)
+	return nil
 }
 
-func finishTriage(result triageResult) error {
+func finishTriage(result triageResult) {
 	fmt.Println("--- triage result ---")
 	pretty, _ := json.MarshalIndent(result, "", "  ")
 	fmt.Println(string(pretty))
@@ -165,38 +166,6 @@ func finishTriage(result triageResult) error {
 	}
 
 	fmt.Println("=== triage done ===")
-	return nil
-}
-
-func callGemini(ctx context.Context, apiKey, model, system, user string) (string, error) {
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  apiKey,
-		Backend: genai.BackendGeminiAPI,
-	})
-	if err != nil {
-		return "", fmt.Errorf("create gemini client: %w", err)
-	}
-
-	temp := float32(0)
-	cfg := &genai.GenerateContentConfig{
-		SystemInstruction: &genai.Content{
-			Parts: []*genai.Part{{Text: system}},
-		},
-		Temperature:      &temp,
-		MaxOutputTokens:  1024,
-		ResponseMIMEType: "application/json",
-	}
-
-	resp, err := client.Models.GenerateContent(ctx, model, genai.Text(user), cfg)
-	if err != nil {
-		return "", fmt.Errorf("gemini generate: %w", err)
-	}
-
-	text := resp.Text()
-	if strings.TrimSpace(text) == "" {
-		return "", fmt.Errorf("empty model content")
-	}
-	return text, nil
 }
 
 func parseResult(raw, model string) (triageResult, error) {
@@ -229,7 +198,7 @@ func writeTermination(result triageResult) error {
 	compact := triageResult{
 		InScope:    result.InScope,
 		Suspicious: result.Suspicious,
-		Summary:    truncateRunes(result.Summary, 1500),
+		Summary:    gemini.TruncateRunes(result.Summary, 1500),
 		Model:      result.Model,
 		ParseError: result.ParseError,
 	}
@@ -245,12 +214,4 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
-}
-
-func truncateRunes(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	return string(r[:max]) + "…"
 }

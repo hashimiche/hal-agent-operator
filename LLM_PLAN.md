@@ -18,7 +18,11 @@
    update the status column, and move the **Current position** pointer.
 4. Never skip a `BLOCKING` task. Never edit generated files by hand.
 
-**Current position:** `T8 — Fixture (fork hal + inject bugs)`
+**Current position:** `T11 — Chart + runbook for Job 2 (KinD)`
+
+> Next operator work: T11 (KinD chart/runbook for Job 2). T9–T10 code may still
+> be **uncommitted** in this repo — commit/review before relying on it. T16
+> approval workflow landed in the `hal` fork; `create-cr` + env/E2E remain.
 
 ## Progress tracker
 
@@ -32,24 +36,25 @@
 | T5 | [x] done | operator | Missing tests (coverage ≥ 70%) |
 | T6 | [x] done | operator | Verify Taskfile podman flow |
 | T7 | [x] done | operator | End-to-end triage validation on KinD |
-| T8 | [ ] todo | `hal` fork | Fixture: fork + 3 injected bugs (**BLOCKING**) |
-| T9 | [ ] todo | operator | Controller phases Ready/Executing/PROpen/Failed |
-| T10 | [ ] todo | operator | `cmd/fix` binary |
+| T8 | [x] done | `test-hal-operator` fork | Fixture: 4 bugs + issues #5–#8 (**was BLOCKING**) |
+| T9 | [x] done | operator | Controller phases Ready/Executing/PROpen/Failed |
+| T10 | [x] done | operator | `cmd/fix` binary + separate fix image |
 | T11 | [ ] todo | operator | Chart + runbook for Job 2 (KinD) |
 | T12 | [ ] todo | operator | CI publish: image GHCR + Helm chart |
 | T13 | [ ] todo | `hal-agent-infra` | TF GKE/Vault/WIF/RBAC + smoke WIF |
 | T14 | [ ] todo | operator | Deploy operator on GKE |
 | T15 | [ ] todo | infra + operator | Vault integration |
-| T16 | [ ] todo | `hal` fork | Actions: `issues.opened` + `"agent go"` |
+| T16 | [~] partial | `hal` fork | Approve workflow done; `create-cr` + env/E2E remain |
 | T17 | [ ] todo | operator | Hardening & ops |
 | T18 | [ ] todo | operator + infra | Docs (ROADMAP.md + infra README) |
 
 ## Context
 
 Triage POC runs: `IssueResolution` CR → triage Job → Gemini → `status.triage`,
-phase `PendingValidation`, then `spec.approved` → `Ready`. The controller
-**stops there** with *"POC stops after triage; Job 2 not wired"*. Secrets =
-K8s Secret `gemini-api`.
+phase `PendingValidation`, then `spec.approved` → `Ready`. **Job 2 is wired in
+code (T9–T10):** `Ready` → `Executing` → `PROpen` (retries via
+`spec.maxFixAttempts`). Secrets for the POC = K8s Secret `gemini-api` (+ GitHub
+PAT for fix Jobs until Vault at T15).
 
 Target: issue GitHub → Action → CR on GKE → triage Job → `"agent go"` → fix Job
 → PR (human merge). Secrets via Vault. Passwordless auth GH↔GCP/GKE and
@@ -73,8 +78,10 @@ written to any file.
   image, publish CI, KinD POC. **No `.tf` here.**
 - **`hal-agent-infra`** (new, T13) — all IaC: Terraform GKE, Vault, GCP WIF, SA,
   cluster RBAC, smoke WIF.
-- **Target repo** (`hal` / fork) — business events: `issues.opened` +
-  `"agent go"` workflows, CODEOWNERS, fixture issues.
+- **Fixture repo** (`hashimiche/test-hal-operator`, T8) — injected bugs,
+  RED tests, GitHub issues for Job 2 development (not the product `hal` tree).
+- **Target / issues repo** (`hal` / fork `hashimiche/hal`) — business events:
+  `issues.opened` + `"agent go"` workflows, CODEOWNERS, approval runbook (T16).
 
 The operator **consumes** the cluster (Helm + values); the infra **provisions**
 it. Terraform outputs (`cluster_name`, `wif_provider`, `vault_addr`, …) live in
@@ -83,8 +90,9 @@ it. Terraform outputs (`cluster_name`, `wif_provider`, `vault_addr`, …) live i
 ```mermaid
 flowchart LR
   subgraph local [KinD first]
-    F[T8 fork bugs]
-    J2[T9 T10 Job 2 fix]
+    F[T8 fork bugs done]
+    J2[T9 T10 Job 2 done]
+    Chart[T11 chart runbook]
     Pub[T12 CI GHCR Helm]
   end
   subgraph infraRepo [hal-agent-infra]
@@ -92,10 +100,10 @@ flowchart LR
   end
   subgraph cloud [On GKE]
     Deploy[T14 Helm operator]
-    GHA[T16 Actions issue CR]
+    GHA[T16 Actions]
     Vlt[T15 Vault auth Jobs]
   end
-  F --> J2 --> Pub
+  F --> J2 --> Chart --> Pub
   J2 --> TF --> Deploy --> GHA
   Deploy --> Vlt
 ```
@@ -142,82 +150,83 @@ Rejected                   Failed
 
 ---
 
-# Remaining — autonomous GKE agent (T8–T18)
+# Done — Job 2 foundation (T8–T10)
 
-## T8 — Fixture: fork `hal` + inject bugs (BLOCKING)
+> Plan docs: [`docs/plans/T8-fixture-fork-bugs.md`](docs/plans/T8-fixture-fork-bugs.md),
+> [`docs/plans/T9-T10-job2-fixer-architecture.md`](docs/plans/T9-T10-job2-fixer-architecture.md).
 
-**Repo**: `hal` fork (outside the operator). **Blocks T9/T10**: no fix loop
-without a target repo, a known bug and a red test.
+## T8 — Fixture: fork + inject bugs (done)
 
-**To do**:
+**Repo**: `hashimiche/test-hal-operator` (fixture fork; **not** the operator repo
+and **not** the product `hal` tree). Plan lived in this operator repo.
 
-- Fork `hal` (or lab clone) + **3 bugs** of increasing difficulty:
-  typo/off-by-one → logic bug in an isolated function → bug spanning 2 files
-  (shows the limit of the single-file approach).
-- Per bug: GitHub issue + failing test + success criterion (test green + PR).
-- Document the fixture (paths, commands) for the Job 2 runbook.
+**Landed**:
 
-**Acceptance**: 3 reproducible bugs; `go test` red on each before fix; issues
-created on the fork.
+- Merged PR #4: test seams (`CheckContainer` / `CheckMultipass` package vars,
+  `MariaDBEndpoint()`, `VaultAttachEndpoint()`).
+- Branches `fixture/bug1`–`fixture/bug4` with injected bugs + RED tests.
+- GitHub issues #5–#8 (symptom-only, `bug` label).
+- No `bugfix/**` branches (Job 2 opens those).
 
----
-
-## T9 — Controller: Job 2 phases (Ready/Executing/PROpen/Failed)
-
-**File**: [`internal/controller/issueresolution_controller.go`](internal/controller/issueresolution_controller.go)
-(remove the stub `case PhaseReady, PhaseExecuting, PhasePROpen, PhaseDone`).
-
-**To do** (structural mirror of `reconcileTriage`, ~200 lines):
-
-- `Ready` → create fix Job `issue-<n>-fix-<attempt>` with `OwnerReference` if
-  absent.
-- `Executing` → watch the Job; requeue.
-- `PROpen` → read termination-log → fill `status.execution` (`prURL`,
-  `prNumber`, `branch`, `attempt`).
-- Read `spec.maxFixAttempts` (present in the CRD, **never read** today) to drive
-  retry; Job `Failed` + attempts exhausted → `PhaseFailed` + readable condition.
-- Never relaunch a Job already `Succeeded` for the same phase (idempotency).
-
-**Acceptance**: envtest — (a) `Ready` → fix Job created with OwnerRef; (b) Job
-succeed → `PROpen` + `status.execution.prURL`; (c) Job fail beyond
-`maxFixAttempts` → `Failed`. `task test` green.
+**Acceptance met**: 4 reproducible bugs; `go test` red on each fixture branch;
+issues created on the fork. Wiring Job 2 to clone base `fixture/bug<N>` (not
+`main`) remains a T11 runbook item.
 
 ---
 
-## T10 — `cmd/fix` binary
+## T9 — Controller: Job 2 phases (done)
 
-**Files**: `cmd/fix/main.go` (new), [`Dockerfile`](Dockerfile) (add `/fix`
-alongside `/manager` + `/triage`).
+**Repo**: operator (`hal-k8s-operator`).
 
-**To do**:
+**Landed**:
 
-- clone → code context → LLM prompt (**output = full corrected file, not a
-  diff**: LLM diffs fail to apply) → write file → `go test` → commit/push branch
-  → open PR → write result (`prURL`, `prNumber`, `branch`) to termination-log.
-- POC secrets: K8s Secret (fine-grained PAT scoped to the fork only,
-  `contents:write` + `pull_requests:write`, never merge/admin) — **not Vault**
-  yet.
-- `go mod tidy`; check the distroless image still builds.
+- Stub `"POC stops after triage; Job 2 not wired"` removed.
+- `Ready` → `Executing` → `PROpen` with retries via `spec.maxFixAttempts`.
+- Helpers: `reconcileFix` / `handleFixFailure` / `buildFixJob` / `readFixResult`.
+- `task test` passed (11/11 controller specs).
 
-**Acceptance**: on a T8 bug, `cmd/fix` locally opens a PR that turns the test
-green; termination-log holds a valid `prURL` JSON.
+**Note**: implementation may still be **uncommitted** locally in the operator
+repo — commit when ready; do not assume it is on remote `main`.
 
 ---
 
-## T11 — Chart + runbook for Job 2 (KinD)
+## T10 — `cmd/fix` binary (done)
+
+**Repo**: operator (`hal-k8s-operator`).
+
+**Landed**:
+
+- `cmd/fix` pipeline: clone → `go test` → 2-phase Gemini → retest →
+  commit/push → PR → termination-log.
+- Separate fix image (`golang:1.26`); Helm/Taskfile wiring; shared
+  `internal/gemini`.
+- Distroless operator image keeps `/manager` + `/triage`; fix Job uses the
+  Go toolchain image.
+
+**Note**: same as T9 — code may be uncommitted locally. Full KinD E2E
+(triage → approve → Job 2 → PR) is **T11**.
+
+---
+
+# Remaining — autonomous GKE agent (T11–T18)
+
+## T11 — Chart + runbook for Job 2 (KinD) ← **resume here**
 
 **Files**: [`charts/hal-k8s-operator/`](charts/hal-k8s-operator/),
 [`POC.md`](POC.md), [`Taskfile.yml`](Taskfile.yml).
 
+**Depends on**: T8 fixture + T9/T10 code (commit T9–T10 if still local-only).
+
 **To do**:
 
 - values for the Job 2 image/entrypoint, the GitHub Secret, `runtimeClassName`
-  (empty by default).
+  (empty by default) — extend whatever T10 already wired.
 - Extend POC.md / Taskfile: full flow triage → `kubectl patch approved` →
-  Job 2 → PR.
+  Job 2 → PR on `test-hal-operator`, cloning base `fixture/bug<N>`.
+- Document per-bug test commands from the T8 fixture doc.
 
-**Acceptance**: on KinD, manual CR → triage → approve → Job 2 → PR on the fork,
-following POC.md with no deviation.
+**Acceptance**: on KinD, manual CR → triage → approve → Job 2 → PR on the
+fixture fork, following POC.md with no deviation.
 
 ---
 
@@ -233,19 +242,20 @@ only).
 | Build & push image | tag `v*` / release | `ghcr.io/<org>/hal-k8s-operator:<tag>` |
 | Package & push Helm | same | OCI chart `oci://ghcr.io/<org>/charts` |
 
+- Also publish the **separate fix image** (T10) alongside the operator image.
 - `permissions: packages: write` (+ `id-token` if needed); GHCR login.
 - Chart version aligned to the tag; `appVersion` = image tag/digest.
 - amd64 to start (multi-arch later).
 - Document install `helm install … oci://…`.
 
-**Acceptance**: a tag pushes image + chart; `helm install` of a published
+**Acceptance**: a tag pushes image(s) + chart; `helm install` of a published
 version works on a fresh cluster (KinD first).
 
 ---
 
 ## T13 — Repo `hal-agent-infra` (IaC + trust boundaries)
 
-**Repo**: **`hal-agent-infra`** (new). Do **after** T9–T11 validated locally
+**Repo**: **`hal-agent-infra`** (new). Do **after** T11 validated locally
 (avoid paying for GKE during the fix iteration). **All** Terraform lives here —
 no `.tf` in `hal-k8s-operator`.
 
@@ -326,26 +336,29 @@ the CR or controller logs.
 
 ---
 
-## T16 — GitHub Actions (target repo)
+## T16 — GitHub Actions (target repo) — **partial**
 
-**Repo**: issues repo (`hal` / fork), not the operator (architecture §2).
+**Repo**: issues repo (`hashimiche/hal`), not the operator (architecture §2).
+Plan: [`docs/plans/T16-github-k8s-approval-workflow.md`](docs/plans/T16-github-k8s-approval-workflow.md).
 Base on [`config/samples/issueresolution.template.yaml`](config/samples/issueresolution.template.yaml).
 
-**To do**:
+### Done (approve volet)
 
-| Workflow | Event | Action |
-|---|---|---|
-| `create-cr` | `issues.opened` | parse issue → fill template (`gh`/`yq`) → `kubectl apply` CR `issue-<n>` (body truncated ~16KiB) |
-| `approve` | `issue_comment` | exact body `"agent go"` + CODEOWNERS author → patch `spec.approved=true` (+ `approvedBy`/`approvedAt`) |
+- `.github/workflows/agent-approve.yml` + `docs/agent-approval-runbook.md` in the
+  `hal` fork.
+- Triggers: comment `agent go` or label `agent: go`; OIDC → WIF → GKE; patch
+  `spec.approved` only (never `status.*`).
 
-Common: auth **OIDC → WIF → GKE** (T13 provider/SA); protected environment;
-idempotency `metadata.name = issue-<number>`; never write `status.*`.
+### Remaining
 
-Job 1 complements (if not done earlier): plan comment + label
-`agent: pending-validation` (triage is analyze-only today).
+| Item | Notes |
+|---|---|
+| Manual env/vars | Protected env `hal-cluster`, GCP/GKE/`HAL_AGENT_NAMESPACE` vars, label `agent: go`, merge workflow to `main` |
+| E2E smoke | CODEOWNER `agent go` → CR `spec.approved=true` on cluster (needs T13/T14 for real GKE) |
+| **`create-cr` workflow** | Still **open** / separate deliverable: `issues.opened` → fill template → `kubectl apply` CR `issue-<n>` |
 
-**Acceptance**: open an issue on the fork → CR on GKE → triage → `"agent go"` →
-Job 2 → PR; human merge only.
+**Full acceptance** (when `create-cr` + infra are ready): open an issue on the
+fork → CR on GKE → triage → `"agent go"` → Job 2 → PR; human merge only.
 
 ---
 
@@ -372,7 +385,7 @@ Job 2 → PR; human merge only.
   `LLM_PLAN.md`, is the live tracker; ROADMAP.md can be a stable public view.)*
 - Mirror README in `hal-agent-infra` (outputs, trust model, smoke WIF).
 
-**Acceptance**: a newcomer follows LLM_PLAN.md T8→T17 with no oral context.
+**Acceptance**: a newcomer follows LLM_PLAN.md T11→T17 with no oral context.
 
 ---
 

@@ -6,6 +6,7 @@ version: '3'
 vars:
   KIND_POC_CLUSTER: hal-agent
   IMG_POC: hal-k8s-operator:poc
+  IMG_FIX_POC: hal-k8s-operator-fix:poc
   CONTAINER_TOOL:
     sh: command -v docker >/dev/null 2>&1 && echo docker || echo podman
   # kind reads KIND_EXPERIMENTAL_PROVIDER ("" = docker auto-detection)
@@ -47,21 +48,24 @@ tasks:
         fi
 
   kind-poc-image:
-    desc: Build the POC image and load it into KinD (docker or podman)
+    desc: Build operator + fix images and load them into KinD (docker or podman)
     cmds:
       - |
         # BuildKit-style ARGs can be empty under podman without defaults in Dockerfile.
+        # Operator/triage = distroless target; fix = golang toolchain target.
         if [ "{{.CONTAINER_TOOL}}" = "podman" ]; then
           # Fully qualified name: otherwise containerd (inside KinD) cannot
           # resolve the image referenced as "hal-k8s-operator:poc".
-          podman build --format docker -t docker.io/library/{{.IMG_POC}} .
+          podman build --format docker --target operator -t docker.io/library/{{.IMG_POC}} .
+          podman build --format docker --target fix -t docker.io/library/{{.IMG_FIX_POC}} .
           tmp=$(mktemp /tmp/hal-poc-img-XXXXXX.tar)
-          podman save docker.io/library/{{.IMG_POC}} -o "$tmp"
+          podman save docker.io/library/{{.IMG_POC}} docker.io/library/{{.IMG_FIX_POC}} -o "$tmp"
           kind load image-archive "$tmp" --name {{.KIND_POC_CLUSTER}}
           rm -f "$tmp"
         else
-          docker build -t {{.IMG_POC}} .
-          kind load docker-image {{.IMG_POC}} --name {{.KIND_POC_CLUSTER}}
+          docker build --target operator -t {{.IMG_POC}} .
+          docker build --target fix -t {{.IMG_FIX_POC}} .
+          kind load docker-image {{.IMG_POC}} {{.IMG_FIX_POC}} --name {{.KIND_POC_CLUSTER}}
         fi
 
   kind-poc-helm:
@@ -78,6 +82,7 @@ tasks:
           --set image.repository=hal-k8s-operator \
           --set image.tag=poc \
           --set image.pullPolicy=IfNotPresent \
+          --set fix.image=hal-k8s-operator-fix:poc \
           --set gemini.apiKey="$GEMINI_API_KEY" \
           {{.CLI_ARGS}}
 

@@ -15,10 +15,10 @@ limitations under the License.
 */
 
 // Package defaults holds shared POC constants so model IDs are not duplicated
-// across cmd/main, cmd/triage, and the controller.
+// across cmd/main, cmd/triage, cmd/fix, and the controller.
 package defaults
 
-// GeminiModel is the default Google AI Studio model for triage Jobs.
+// GeminiModel is the default Google AI Studio model for triage/fix Jobs.
 // Deliberately a PINNED id, not the rolling "gemini-flash-latest" alias: the
 // alias caused intermittent model-unavailability errors, so we pin for
 // stability and bump this manually as newer Flash-Lite versions ship.
@@ -34,3 +34,12 @@ const GeminiSecretKey = "GEMINI_API_KEY"
 
 // TriageImage is the default container image for triage Jobs (KinD POC).
 const TriageImage = "hal-k8s-operator:poc"
+
+// FixImage is the default container image for fix Jobs (needs Go toolchain).
+const FixImage = "hal-k8s-operator-fix:poc"
+
+// GitHubSecretName is the default Secret holding a fine-grained PAT for Job 2.
+const GitHubSecretName = "github-pat"
+
+// GitHubSecretKey is the default key inside that Secret.
+const GitHubSecretKey = "GITHUB_TOKEN"

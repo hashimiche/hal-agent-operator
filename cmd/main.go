@@ -63,9 +63,12 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var triageImage string
+	var fixImage string
 	var geminiSecretName string
 	var geminiSecretKey string
 	var geminiModel string
+	var githubSecretName string
+	var githubSecretKey string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -86,12 +89,18 @@ func main() {
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
 	flag.StringVar(&triageImage, "triage-image", envOr("TRIAGE_IMAGE", defaults.TriageImage),
 		"Container image for the triage Job (KinD POC: same image as the operator).")
+	flag.StringVar(&fixImage, "fix-image", envOr("FIX_IMAGE", defaults.FixImage),
+		"Container image for the fix Job (needs Go toolchain; separate from distroless operator image).")
 	flag.StringVar(&geminiSecretName, "gemini-secret-name", envOr("GEMINI_SECRET_NAME", defaults.GeminiSecretName),
 		"Name of the Secret that holds the Gemini API key.")
 	flag.StringVar(&geminiSecretKey, "gemini-secret-key", envOr("GEMINI_SECRET_KEY", defaults.GeminiSecretKey),
 		"Key inside the Secret for the Gemini API key.")
 	flag.StringVar(&geminiModel, "gemini-model", envOr("GEMINI_MODEL", defaults.GeminiModel),
-		"Gemini model id passed to the triage Job.")
+		"Gemini model id passed to triage/fix Jobs.")
+	flag.StringVar(&githubSecretName, "github-secret-name", envOr("GITHUB_SECRET_NAME", defaults.GitHubSecretName),
+		"Name of the Secret that holds the GitHub PAT for fix Jobs.")
+	flag.StringVar(&githubSecretKey, "github-secret-key", envOr("GITHUB_SECRET_KEY", defaults.GitHubSecretKey),
+		"Key inside the Secret for the GitHub PAT.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -195,16 +204,21 @@ func main() {
 		Client:           mgr.GetClient(),
 		Scheme:           mgr.GetScheme(),
 		TriageImage:      triageImage,
+		FixImage:         fixImage,
 		GeminiSecretName: geminiSecretName,
 		GeminiSecretKey:  geminiSecretKey,
 		GeminiModel:      geminiModel,
+		GitHubSecretName: githubSecretName,
+		GitHubSecretKey:  githubSecretKey,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "issueresolution")
 		os.Exit(1)
 	}
-	setupLog.Info("Triage Job config",
-		"image", triageImage,
-		"secret", geminiSecretName,
+	setupLog.Info("Job config",
+		"triageImage", triageImage,
+		"fixImage", fixImage,
+		"geminiSecret", geminiSecretName,
+		"githubSecret", githubSecretName,
 		"model", geminiModel,
 	)
 	// +kubebuilder:scaffold:builder

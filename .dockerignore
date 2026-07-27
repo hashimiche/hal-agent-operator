@@ -13,5 +13,4 @@ charts
 config/samples
 test/e2e
 .github
-.devcontainer
 **/*_test.go

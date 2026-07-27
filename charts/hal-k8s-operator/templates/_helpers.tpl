@@ -48,3 +48,11 @@ control-plane: controller-manager
 {{- include "hal-k8s-operator.image" . }}
 {{- end }}
 {{- end }}
+
+{{- define "hal-k8s-operator.fixImage" -}}
+{{- if .Values.fix.image }}
+{{- .Values.fix.image }}
+{{- else }}
+{{- printf "%s-fix:%s" .Values.image.repository .Values.image.tag }}
+{{- end }}
+{{- end }}
