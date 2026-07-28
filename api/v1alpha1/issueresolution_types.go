@@ -110,6 +110,12 @@ type IssueResolutionSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:Maximum=10
 	MaxFixAttempts *int32 `json:"maxFixAttempts,omitempty"`
+
+	// baseBranch is the git ref Job 2 clones and uses as the PR base.
+	// Empty means the repository default branch. Fixture POC uses fixture/bug1 … fixture/bug4.
+	// +optional
+	// +kubebuilder:validation:MaxLength=200
+	BaseBranch string `json:"baseBranch,omitempty"`
 }
 
 // TriageStatus is the result of Job 1 (text-only analysis).

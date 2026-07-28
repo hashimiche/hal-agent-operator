@@ -1,0 +1,45 @@
+# Job 2 KinD sample — pre-approved so triage → PendingValidation → Ready → fix Job
+# without a manual patch (POC shortcut; production keeps create-cr approved=false +
+# a separate "agent go" Action). baseBranch forces Job 2 onto the fixture RED branch.
+apiVersion: agent.hal.dev/v1alpha1
+kind: IssueResolution
+metadata:
+  name: issue-5
+  namespace: hal-agent
+  labels:
+    app.kubernetes.io/name: hal-k8s-operator
+    hal.dev/repo: hashimiche-test-hal-operator
+    hal.dev/issue: "5"
+    hal.dev/fixture-branch: fixture-bug1
+spec:
+  repository: hashimiche/test-hal-operator
+  issueNumber: 5
+  issueURL: https://github.com/hashimiche/test-hal-operator/issues/5
+  author: hashimiche
+  authorAssociation: OWNER
+  title: "bug: MCP streamable-http rejects loopback origin 127.0.0.1"
+  body: |
+    ### Description
+    Le serveur MCP (transport streamable-http) refuse les requêtes dont l'en-tête
+    `Origin` est `http://127.0.0.1:<port>`, alors que les clients locaux (boucle
+    locale) devraient toujours être autorisés. `http://localhost:...` fonctionne,
+    mais `http://127.0.0.1:...` non — incohérent.
+
+    ### Steps to reproduce
+    1. `hal mcp serve --transport streamable-http --http-port 8080`
+    2. POST `initialize` avec l'en-tête `Origin: http://127.0.0.1:5173`
+    3. Observer la réponse HTTP.
+
+    ### Expected / Actual
+    Attendu : requête acceptée (HTTP 200). Constaté : `403 Forbidden` ("origin not allowed").
+
+    ### OS / platform
+    Linux (WSL2)
+  labels:
+    - bug
+  createdAt: "2026-07-23T18:57:11Z"
+  baseBranch: fixture/bug1
+  approved: true
+  approvedBy: hashimiche
+  approvedAt: "2026-07-23T19:00:00Z"
+  maxFixAttempts: 2

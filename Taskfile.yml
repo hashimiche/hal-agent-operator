@@ -38,14 +38,59 @@ tasks:
     silent: true
 
   kind-poc-cluster:
-    desc: Create the POC KinD cluster (idempotent)
+    desc: Create the POC KinD cluster (idempotent, IPv4-only)
     cmds:
       - |
         if kind get clusters 2>/dev/null | grep -qx '{{.KIND_POC_CLUSTER}}'; then
           echo "cluster {{.KIND_POC_CLUSTER}} already exists"
         else
-          kind create cluster --name {{.KIND_POC_CLUSTER}}
+          kind create cluster --name {{.KIND_POC_CLUSTER}} --config config/kind/hal-agent.yaml
         fi
+      - task: kind-poc-dns
+
+  kind-poc-dns:
+    desc: Patch CoreDNS for KinD/Podman (IPv4 upstream, suppress AAAA)
+    cmds:
+      - |
+        # Podman+WSL2: /etc/resolv.conf often points at an unreachable IPv6
+        # resolver, and AAAA answers make Go/Gemini dial IPv6 → ENETUNREACH.
+        kubectl --context kind-{{.KIND_POC_CLUSTER}} -n kube-system apply -f - <<'EOF'
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: coredns
+          namespace: kube-system
+        data:
+          Corefile: |
+            .:53 {
+                errors
+                health {
+                   lameduck 5s
+                }
+                ready
+                template ANY AAAA {
+                   rcode NOERROR
+                }
+                kubernetes cluster.local in-addr.arpa ip6.arpa {
+                   pods insecure
+                   fallthrough in-addr.arpa ip6.arpa
+                   ttl 30
+                }
+                prometheus :9153
+                forward . 8.8.8.8 1.1.1.1 {
+                   max_concurrent 1000
+                }
+                cache 30 {
+                   disable success cluster.local
+                   disable denial cluster.local
+                }
+                loop
+                reload
+                loadbalance
+            }
+        EOF
+        kubectl --context kind-{{.KIND_POC_CLUSTER}} -n kube-system rollout restart deployment/coredns
+        kubectl --context kind-{{.KIND_POC_CLUSTER}} -n kube-system rollout status deployment/coredns --timeout=90s
 
   kind-poc-image:
     desc: Build operator + fix images and load them into KinD (docker or podman)
@@ -53,15 +98,20 @@ tasks:
       - |
         # BuildKit-style ARGs can be empty under podman without defaults in Dockerfile.
         # Operator/triage = distroless target; fix = golang toolchain target.
+        # IMPORTANT (podman): never `podman save A B` into one archive for
+        # `kind load image-archive` — containerd can tag both names to the same
+        # image ID (operator wins → fix Job: exec /fix: no such file).
         if [ "{{.CONTAINER_TOOL}}" = "podman" ]; then
           # Fully qualified name: otherwise containerd (inside KinD) cannot
           # resolve the image referenced as "hal-k8s-operator:poc".
           podman build --format docker --target operator -t docker.io/library/{{.IMG_POC}} .
           podman build --format docker --target fix -t docker.io/library/{{.IMG_FIX_POC}} .
-          tmp=$(mktemp /tmp/hal-poc-img-XXXXXX.tar)
-          podman save docker.io/library/{{.IMG_POC}} docker.io/library/{{.IMG_FIX_POC}} -o "$tmp"
-          kind load image-archive "$tmp" --name {{.KIND_POC_CLUSTER}}
-          rm -f "$tmp"
+          for img in docker.io/library/{{.IMG_POC}} docker.io/library/{{.IMG_FIX_POC}}; do
+            tmp=$(mktemp /tmp/hal-poc-img-XXXXXX.tar)
+            podman save "$img" -o "$tmp"
+            kind load image-archive "$tmp" --name {{.KIND_POC_CLUSTER}}
+            rm -f "$tmp"
+          done
         else
           docker build --target operator -t {{.IMG_POC}} .
           docker build --target fix -t {{.IMG_FIX_POC}} .
@@ -69,14 +119,21 @@ tasks:
         fi
 
   kind-poc-helm:
-    desc: Deploy the operator via Helm (requires GEMINI_API_KEY)
+    desc: Deploy the operator via Helm (requires GEMINI_API_KEY + GITHUB_TOKEN + KinD cluster)
     preconditions:
       - sh: test -n "$GEMINI_API_KEY"
         msg: 'export GEMINI_API_KEY=... first (https://aistudio.google.com/apikey)'
+      - sh: test -n "$GITHUB_TOKEN"
+        msg: 'export GITHUB_TOKEN=... first (fine-grained PAT: issues:write [+ contents/PR write for Job 2])'
+      - sh: kind get clusters 2>/dev/null | grep -qx '{{.KIND_POC_CLUSTER}}'
+        msg: 'KinD cluster {{.KIND_POC_CLUSTER}} not found — run: task kind-poc-cluster'
+      - sh: kubectl --context kind-{{.KIND_POC_CLUSTER}} get nodes >/dev/null 2>&1
+        msg: 'KinD cluster {{.KIND_POC_CLUSTER}} exists but API is unreachable (node/pod down?) — recreate with: task kind-poc-clean && task kind-poc-cluster'
     cmds:
       - |
         # Namespace via --create-namespace only (no Namespace object in the chart),
         # so re-runs stay idempotent when hal-agent already exists.
+        # github.token → Secret github-pat (Job 1 comment/labels + Job 2 clone/PR).
         helm upgrade --install hal-agent ./charts/hal-k8s-operator \
           --namespace hal-agent --create-namespace \
           --set image.repository=hal-k8s-operator \
@@ -84,15 +141,16 @@ tasks:
           --set image.pullPolicy=IfNotPresent \
           --set fix.image=hal-k8s-operator-fix:poc \
           --set gemini.apiKey="$GEMINI_API_KEY" \
+          --set github.token="$GITHUB_TOKEN" \
           {{.CLI_ARGS}}
 
   kind-poc:
-    desc: Full pipeline — cluster + image + helm
+    desc: Full pipeline — cluster + image + helm (then POC.md steps 4–8 for Job 2)
     cmds:
       - task: kind-poc-cluster
       - task: kind-poc-image
       - task: kind-poc-helm
-      - cmd: echo "Demo CR -> kubectl apply -f config/samples/agent_v1alpha1_issueresolution.yaml"
+      - cmd: echo "Next -> POC.md steps 4–8 (CR issue-5, triage, approve, fix Job, PROpen)"
         silent: true
 
   kind-poc-clean:

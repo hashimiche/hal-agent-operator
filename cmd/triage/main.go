@@ -32,6 +32,7 @@ type triageResult struct {
 	Summary    string `json:"summary"`
 	Model      string `json:"model"`
 	ParseError bool   `json:"parseError,omitempty"`
+	CommentURL string `json:"commentURL,omitempty"`
 	Raw        string `json:"raw,omitempty"`
 }
 
@@ -85,8 +86,7 @@ func run() error {
 			Summary:    formatHeuristicSummary(findings),
 			Model:      "heuristic",
 		}
-		finishTriage(result)
-		return nil
+		return finishTriage(repo, number, result)
 	}
 
 	apiKey := os.Getenv("GEMINI_API_KEY")
@@ -152,20 +152,32 @@ Rules:
 		fmt.Fprintf(os.Stderr, "warn: %v\n", err)
 	}
 
-	finishTriage(result)
-	return nil
+	return finishTriage(repo, number, result)
 }
 
-func finishTriage(result triageResult) {
+func finishTriage(repo, issueNumber string, result triageResult) error {
 	fmt.Println("--- triage result ---")
 	pretty, _ := json.MarshalIndent(result, "", "  ")
 	fmt.Println(string(pretty))
 
+	fmt.Println("--- posting GitHub feedback ---")
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	commentURL, err := postTriageFeedback(ctx, os.Getenv("GITHUB_TOKEN"), repo, issueNumber, result)
+	if err != nil {
+		_ = writeTermination(result)
+		return fmt.Errorf("github feedback: %w", err)
+	}
+	result.CommentURL = commentURL
+	fmt.Printf("comment: %s\n", commentURL)
+
 	if err := writeTermination(result); err != nil {
-		fmt.Fprintf(os.Stderr, "warn: termination-log: %v\n", err)
+		return fmt.Errorf("termination-log: %w", err)
 	}
 
 	fmt.Println("=== triage done ===")
+	return nil
 }
 
 func parseResult(raw, model string) (triageResult, error) {
@@ -201,6 +213,7 @@ func writeTermination(result triageResult) error {
 		Summary:    gemini.TruncateRunes(result.Summary, 1500),
 		Model:      result.Model,
 		ParseError: result.ParseError,
+		CommentURL: result.CommentURL,
 	}
 	b, err := json.Marshal(compact)
 	if err != nil {

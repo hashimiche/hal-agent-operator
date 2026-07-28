@@ -18,11 +18,12 @@
    update the status column, and move the **Current position** pointer.
 4. Never skip a `BLOCKING` task. Never edit generated files by hand.
 
-**Current position:** `T11 — Chart + runbook for Job 2 (KinD)`
+**Current position:** `T12 — CI publish: image GHCR + Helm chart`
 
-> Next operator work: T11 (KinD chart/runbook for Job 2). T9–T10 code may still
-> be **uncommitted** in this repo — commit/review before relying on it. T16
-> approval workflow landed in the `hal` fork; `create-cr` + env/E2E remain.
+> Next operator work: T12 (publish operator + fix images and Helm chart to
+> GHCR). T11 validated on KinD (2026-07-28): issue #5/#6 → `PROpen`; #8
+> multi-file limit confirmed (expected fail). T16 approval workflow landed in
+> the `hal` fork; `create-cr` + env/E2E remain.
 
 ## Progress tracker
 
@@ -39,7 +40,7 @@
 | T8 | [x] done | `test-hal-operator` fork | Fixture: 4 bugs + issues #5–#8 (**was BLOCKING**) |
 | T9 | [x] done | operator | Controller phases Ready/Executing/PROpen/Failed |
 | T10 | [x] done | operator | `cmd/fix` binary + separate fix image |
-| T11 | [ ] todo | operator | Chart + runbook for Job 2 (KinD) |
+| T11 | [x] done | operator | Chart + runbook for Job 2 (KinD) |
 | T12 | [ ] todo | operator | CI publish: image GHCR + Helm chart |
 | T13 | [ ] todo | `hal-agent-infra` | TF GKE/Vault/WIF/RBAC + smoke WIF |
 | T14 | [ ] todo | operator | Deploy operator on GKE |
@@ -206,14 +207,22 @@ repo — commit when ready; do not assume it is on remote `main`.
 **Note**: same as T9 — code may be uncommitted locally. Full KinD E2E
 (triage → approve → Job 2 → PR) is **T11**.
 
+**Side delivery (post-T10, before T11) — [x] done (KinD 2026-07-27)**: Job 1
+posts a GitHub triage comment + labels (`triage:executed`, `suspicious:*`,
+`in-scope:*`, `agent:pending-validation` / `agent:rejected`) and sets
+`status.plan.commentURL`. `kind-poc-helm` wires `github.token` → Secret
+`github-pat` (`issues:write`). Validated: CR → triage → comment + labels on
+fixture issue.
+
 ---
 
 # Remaining — autonomous GKE agent (T11–T18)
 
-## T11 — Chart + runbook for Job 2 (KinD) ← **resume here**
+## T11 — Chart + runbook for Job 2 (KinD) (done)
 
 **Files**: [`charts/hal-k8s-operator/`](charts/hal-k8s-operator/),
-[`POC.md`](POC.md), [`Taskfile.yml`](Taskfile.yml).
+[`POC.md`](POC.md), [`Taskfile.yml`](Taskfile.yml),
+[`docs/plans/T11-chart-runbook-job2-kind.md`](docs/plans/T11-chart-runbook-job2-kind.md).
 
 **Depends on**: T8 fixture + T9/T10 code (commit T9–T10 if still local-only).
 
@@ -227,6 +236,10 @@ repo — commit when ready; do not assume it is on remote `main`.
 
 **Acceptance**: on KinD, manual CR → triage → approve → Job 2 → PR on the
 fixture fork, following POC.md with no deviation.
+
+**Note (2026-07-28)**: KinD E2E OK — #5/#6 → `PROpen`; #8 multi-file stays RED
+(by design). Hardening along the way: surgical Gemini edits, CoreDNS IPv4,
+podman image load one-by-one, job2 samples pre-approved.
 
 ---
 
@@ -299,6 +312,11 @@ sequenceDiagram
 **Acceptance**: `terraform apply` OK; smoke `workflow_dispatch` (OIDC → WIF →
 `kubectl get ns` / `kubectl get issueresolutions -n hal-agent`) succeeds
 **without a JSON key**.
+
+**Scaffold note (T13f code delivery):** Modules GKE/WIF/Vault/RBAC are composed
+in `hal-agent-infra` `envs/lab` with the required root outputs; smoke workflow
+`.github/workflows/smoke-wif.yml` is present. Tracker stays `[ ]` until a human
+completes real `terraform apply` + green smoke (no GCP assumed in CI scaffold).
 
 ---
 

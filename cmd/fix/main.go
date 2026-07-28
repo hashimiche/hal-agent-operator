@@ -13,6 +13,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -53,6 +55,16 @@ type locateResponse struct {
 	Path string `json:"path"`
 }
 
+// fileEdit is one surgical replacement returned by Gemini (JSON).
+type fileEdit struct {
+	Old string `json:"old"`
+	New string `json:"new"`
+}
+
+type editResponse struct {
+	Edits []fileEdit `json:"edits"`
+}
+
 type fixConfig struct {
 	Repository    string
 	IssueNumber   string
@@ -63,6 +75,7 @@ type fixConfig struct {
 	Model         string
 	GitHubToken   string
 	BranchName    string
+	BaseBranch    string
 	Attempt       int32
 	WorkDir       string
 }
@@ -100,6 +113,7 @@ func loadConfig() (fixConfig, error) {
 		Model:         envOr("GEMINI_MODEL", defaults.GeminiModel),
 		GitHubToken:   os.Getenv("GITHUB_TOKEN"),
 		BranchName:    os.Getenv("BRANCH_NAME"),
+		BaseBranch:    os.Getenv("BASE_BRANCH"),
 		Attempt:       int32(attempt),
 		WorkDir:       envOr("WORKDIR", "/workspace"),
 	}
@@ -152,6 +166,11 @@ func run(cfg fixConfig) error {
 	}
 	fmt.Printf("default branch: %s\n", baseBranch)
 
+	// Create the bugfix branch before editing so commit does not need a dirty checkout.
+	if err := checkoutNewBranch(repo, cfg.BranchName); err != nil {
+		return err
+	}
+
 	fmt.Println("--- baseline go test ---")
 	baselineOut, baselineErr := runGoTest(ctx, repoDir)
 	if baselineErr == nil {
@@ -184,6 +203,9 @@ func run(cfg fixConfig) error {
 	fixed, err := rewriteFile(ctx, cfg, targetPath, string(original), baselineOut)
 	if err != nil {
 		return err
+	}
+	if err := validateGoSource(targetPath, fixed); err != nil {
+		return fmt.Errorf("rewritten %s is not valid Go: %w", targetPath, err)
 	}
 	if err := os.WriteFile(absPath, []byte(fixed), 0o644); err != nil {
 		return fmt.Errorf("write fixed file: %w", err)
@@ -227,13 +249,21 @@ func run(cfg fixConfig) error {
 func cloneRepo(ctx context.Context, cfg fixConfig, repoDir string) (*git.Repository, string, error) {
 	auth := &gitHttp.BasicAuth{Username: "x-access-token", Password: cfg.GitHubToken}
 	url := fmt.Sprintf("https://github.com/%s.git", cfg.Repository)
-	repo, err := git.PlainCloneContext(ctx, repoDir, false, &git.CloneOptions{
+	opts := &git.CloneOptions{
 		URL:      url,
 		Auth:     auth,
 		Progress: os.Stdout,
-	})
+	}
+	if cfg.BaseBranch != "" {
+		opts.ReferenceName = plumbing.NewBranchReferenceName(cfg.BaseBranch)
+		opts.SingleBranch = true
+	}
+	repo, err := git.PlainCloneContext(ctx, repoDir, false, opts)
 	if err != nil {
 		return nil, "", fmt.Errorf("clone %s: %w", url, err)
+	}
+	if cfg.BaseBranch != "" {
+		return repo, cfg.BaseBranch, nil
 	}
 	head, err := repo.Head()
 	if err != nil {
@@ -318,9 +348,20 @@ unless the issue is clearly about the test itself.
 
 func rewriteFile(ctx context.Context, cfg fixConfig, path, content, testOut string) (string, error) {
 	system := strings.TrimSpace(`
-You are fixing a single Go source file for the HAL project.
-Return ONLY the complete corrected file contents — no markdown fences, no explanation.
-Do not invent unrelated refactors. Keep the change minimal.
+You fix a single Go source file with minimal surgical edits.
+Respond with ONLY one or more edits in this exact plain-text format (no JSON, no markdown):
+
+*** Begin Edit ***
+*** Old ***
+<exact unique substring copied from the file>
+*** New ***
+<replacement>
+*** End Edit ***
+
+Rules:
+- Each Old block must appear EXACTLY ONCE in the current file.
+- Prefer the smallest unique Old text (often one line).
+- Do NOT rewrite the whole file. Do NOT invent unrelated refactors.
 `)
 	user := fmt.Sprintf(
 		"Repository: %s\nIssue #%s\nTitle: %s\nTriage summary: %s\n\nBody:\n%s\n\n"+
@@ -331,26 +372,155 @@ Do not invent unrelated refactors. Keep the change minimal.
 	)
 	raw, err := gemini.Call(ctx, cfg.APIKey, cfg.Model, system, user, gemini.CallOptions{
 		ResponseMIMEType: "text/plain",
-		MaxOutputTokens:  8192,
+		MaxOutputTokens:  2048,
 	})
 	if err != nil {
 		return "", err
 	}
-	return stripCodeFences(raw), nil
+	edits, err := parseEdits(raw)
+	if err != nil {
+		return "", err
+	}
+	fixed, err := applyEdits(content, edits)
+	if err != nil {
+		return "", err
+	}
+	return fixed, nil
+}
+
+func parseEdits(raw string) ([]fileEdit, error) {
+	trimmed := strings.TrimSpace(raw)
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "```json") {
+		if edits, err := parseJSONEdits(trimmed); err == nil {
+			return edits, nil
+		}
+	}
+	edits, err := parseMarkerEdits(trimmed)
+	if err != nil {
+		return nil, err
+	}
+	return edits, nil
+}
+
+func parseJSONEdits(raw string) ([]fileEdit, error) {
+	cleaned := extractJSONObject(raw)
+	var resp editResponse
+	if err := json.Unmarshal([]byte(cleaned), &resp); err != nil {
+		return nil, fmt.Errorf("parse edit response: %w", err)
+	}
+	return validateEdits(resp.Edits)
+}
+
+func parseMarkerEdits(raw string) ([]fileEdit, error) {
+	const (
+		begin = "*** Begin Edit ***"
+		oldM  = "*** Old ***"
+		newM  = "*** New ***"
+		endM  = "*** End Edit ***"
+	)
+	var edits []fileEdit
+	rest := raw
+	for {
+		i := strings.Index(rest, begin)
+		if i < 0 {
+			break
+		}
+		rest = rest[i+len(begin):]
+		end := strings.Index(rest, endM)
+		if end < 0 {
+			return nil, fmt.Errorf("edit block missing %q", endM)
+		}
+		block := rest[:end]
+		rest = rest[end+len(endM):]
+
+		oi := strings.Index(block, oldM)
+		ni := strings.Index(block, newM)
+		if oi < 0 || ni < 0 || ni < oi {
+			return nil, fmt.Errorf("edit block missing Old/New markers")
+		}
+		oldPart := strings.TrimPrefix(block[oi+len(oldM):ni], "\n")
+		oldPart = strings.TrimSuffix(oldPart, "\n")
+		newPart := strings.TrimPrefix(block[ni+len(newM):], "\n")
+		newPart = strings.TrimSuffix(newPart, "\n")
+		edits = append(edits, fileEdit{Old: oldPart, New: newPart})
+	}
+	return validateEdits(edits)
+}
+
+func validateEdits(edits []fileEdit) ([]fileEdit, error) {
+	if len(edits) == 0 {
+		return nil, fmt.Errorf("model returned no edits")
+	}
+	for i, e := range edits {
+		if e.Old == "" {
+			return nil, fmt.Errorf("edit[%d]: empty old", i)
+		}
+		if e.Old == e.New {
+			return nil, fmt.Errorf("edit[%d]: old and new are identical", i)
+		}
+	}
+	return edits, nil
+}
+
+func applyEdits(content string, edits []fileEdit) (string, error) {
+	out := content
+	for i, e := range edits {
+		n := strings.Count(out, e.Old)
+		if n == 0 {
+			return "", fmt.Errorf("edit[%d]: old string not found in file", i)
+		}
+		if n > 1 {
+			return "", fmt.Errorf("edit[%d]: old string matches %d times (need exactly 1)", i, n)
+		}
+		out = strings.Replace(out, e.Old, e.New, 1)
+	}
+	if out == content {
+		return "", fmt.Errorf("edits produced no change")
+	}
+	return out, nil
+}
+
+func validateGoSource(path, src string) error {
+	fset := token.NewFileSet()
+	_, err := parser.ParseFile(fset, path, src, parser.AllErrors)
+	return err
+}
+
+func extractJSONObject(raw string) string {
+	cleaned := strings.TrimSpace(raw)
+	cleaned = strings.TrimPrefix(cleaned, "```json")
+	cleaned = strings.TrimPrefix(cleaned, "```")
+	cleaned = strings.TrimSuffix(cleaned, "```")
+	cleaned = strings.TrimSpace(cleaned)
+	if !strings.HasPrefix(cleaned, "{") {
+		start := strings.Index(cleaned, "{")
+		end := strings.LastIndex(cleaned, "}")
+		if start >= 0 && end > start {
+			cleaned = cleaned[start : end+1]
+		}
+	}
+	return cleaned
+}
+
+func checkoutNewBranch(repo *git.Repository, branch string) error {
+	wt, err := repo.Worktree()
+	if err != nil {
+		return fmt.Errorf("worktree: %w", err)
+	}
+	err = wt.Checkout(&git.CheckoutOptions{
+		Branch: plumbing.NewBranchReferenceName(branch),
+		Create: true,
+	})
+	if err != nil {
+		return fmt.Errorf("checkout branch %s: %w", branch, err)
+	}
+	return nil
 }
 
 func commitAndPush(ctx context.Context, repo *git.Repository, cfg fixConfig, changedPath string) error {
 	wt, err := repo.Worktree()
 	if err != nil {
 		return fmt.Errorf("worktree: %w", err)
-	}
-	branchRef := plumbing.NewBranchReferenceName(cfg.BranchName)
-	err = wt.Checkout(&git.CheckoutOptions{
-		Branch: branchRef,
-		Create: true,
-	})
-	if err != nil {
-		return fmt.Errorf("checkout branch %s: %w", cfg.BranchName, err)
 	}
 	if _, err := wt.Add(changedPath); err != nil {
 		return fmt.Errorf("git add %s: %w", changedPath, err)
@@ -417,18 +587,7 @@ func writeTermination(result fixJobResult) error {
 }
 
 func parseLocatePath(raw string) (string, error) {
-	cleaned := strings.TrimSpace(raw)
-	cleaned = strings.TrimPrefix(cleaned, "```json")
-	cleaned = strings.TrimPrefix(cleaned, "```")
-	cleaned = strings.TrimSuffix(cleaned, "```")
-	cleaned = strings.TrimSpace(cleaned)
-	if !strings.HasPrefix(cleaned, "{") {
-		start := strings.Index(cleaned, "{")
-		end := strings.LastIndex(cleaned, "}")
-		if start >= 0 && end > start {
-			cleaned = cleaned[start : end+1]
-		}
-	}
+	cleaned := extractJSONObject(raw)
 	var loc locateResponse
 	if err := json.Unmarshal([]byte(cleaned), &loc); err != nil {
 		return "", fmt.Errorf("parse locate response: %w", err)

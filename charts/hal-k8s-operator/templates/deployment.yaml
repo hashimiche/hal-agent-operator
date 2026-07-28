@@ -38,6 +38,9 @@ spec:
             - --gemini-model={{ .Values.triage.model }}
             - --github-secret-name={{ .Values.github.secretName }}
             - --github-secret-key={{ .Values.github.secretKey }}
+            {{- if .Values.runtimeClassName }}
+            - --job-runtime-class-name={{ .Values.runtimeClassName }}
+            {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

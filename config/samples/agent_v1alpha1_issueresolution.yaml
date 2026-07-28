@@ -1,25 +1,29 @@
+# KinD POC sample — fixture issue #5 on hashimiche/test-hal-operator (T8 bug 1).
+# Job 2 clones baseBranch fixture/bug1 and opens PR → fixture/bug1.
+# See POC.md and docs/plans/T11-chart-runbook-job2-kind.md for the full flow.
 apiVersion: agent.hal.dev/v1alpha1
 kind: IssueResolution
 metadata:
-  name: issue-1234
+  name: issue-5
   namespace: hal-agent
   labels:
     app.kubernetes.io/name: hal-k8s-operator
     app.kubernetes.io/managed-by: kustomize
-    hal.dev/repo: hashimiche-hal
-    hal.dev/author: alice
+    hal.dev/repo: hashimiche-test-hal-operator
+    hal.dev/author: reporter
 spec:
-  repository: hashimiche/hal
-  issueNumber: 1234
-  issueURL: https://github.com/hashimiche/hal/issues/1234
-  author: alice
+  repository: hashimiche/test-hal-operator
+  issueNumber: 5
+  issueURL: https://github.com/hashimiche/test-hal-operator/issues/5
+  author: reporter
   authorAssociation: CONTRIBUTOR
-  title: "docs: typo in vault oidc skill"
+  title: "bug: MCP streamable-http rejects loopback origin 127.0.0.1"
   body: |
-    The OIDC skill examples still mention the old flag name.
-    Please fix the wording and keep EXAMPLES.md in sync.
+    The MCP streamable-http server rejects requests with Origin http://127.0.0.1:<port>
+    even though localhost loopback clients should be allowed. http://localhost:... works;
+    http://127.0.0.1:... returns 403 Forbidden ("origin not allowed").
   labels:
-    - docs
     - bug
+  baseBranch: fixture/bug1
   approved: false
   maxFixAttempts: 2

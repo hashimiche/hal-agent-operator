@@ -1,0 +1,47 @@
+# Job 2 KinD sample — pre-approved so triage → fix Job without a manual patch.
+# POC: baseBranch forces Job 2 onto the fixture RED branch (not main).
+apiVersion: agent.hal.dev/v1alpha1
+kind: IssueResolution
+metadata:
+  name: issue-6
+  namespace: hal-agent
+  labels:
+    app.kubernetes.io/name: hal-k8s-operator
+    hal.dev/repo: hashimiche-test-hal-operator
+    hal.dev/issue: "6"
+    hal.dev/fixture-branch: fixture-bug2
+spec:
+  repository: hashimiche/test-hal-operator
+  issueNumber: 6
+  issueURL: https://github.com/hashimiche/test-hal-operator/issues/6
+  author: hashimiche
+  authorAssociation: OWNER
+  title: "bug: hal status reports Vault OIDC as down even when Authentik is running"
+  body: |
+    ### Description
+    Le snapshot de santé (`hal status`, hal-health / HAL Plus / MCP) affiche la
+    feature Vault "oidc" comme désactivée alors que la stack Authentik
+    (hal-authentik-server) tourne et que l'OIDC Vault est bien configuré.
+    `hal vault status` affiche correctement l'OIDC comme actif — les deux vues
+    se contredisent.
+
+    ### Steps to reproduce
+    1. `hal vault create` puis `hal vault oidc --enable` (déploie Authentik).
+    2. Vérifier que `hal-authentik-server` tourne.
+    3. Comparer `hal vault status` (OIDC up) et `hal status` (OIDC down).
+
+    ### Expected / Actual
+    Attendu : les deux vues reportent l'OIDC Vault actif quand Authentik tourne.
+    Constaté : le snapshot global reporte "oidc: disabled" (sonde un conteneur
+    qui n'existe plus).
+
+    ### OS / platform
+    Linux (WSL2)
+  labels:
+    - bug
+  createdAt: "2026-07-23T18:57:12Z"
+  baseBranch: fixture/bug2
+  approved: true
+  approvedBy: hashimiche
+  approvedAt: "2026-07-23T19:00:00Z"
+  maxFixAttempts: 2

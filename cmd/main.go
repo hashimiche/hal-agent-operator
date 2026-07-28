@@ -69,6 +69,7 @@ func main() {
 	var geminiModel string
 	var githubSecretName string
 	var githubSecretKey string
+	var jobRuntimeClassName string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -101,6 +102,8 @@ func main() {
 		"Name of the Secret that holds the GitHub PAT for fix Jobs.")
 	flag.StringVar(&githubSecretKey, "github-secret-key", envOr("GITHUB_SECRET_KEY", defaults.GitHubSecretKey),
 		"Key inside the Secret for the GitHub PAT.")
+	flag.StringVar(&jobRuntimeClassName, "job-runtime-class-name", envOr("JOB_RUNTIME_CLASS_NAME", ""),
+		"RuntimeClassName for triage/fix Job pods (empty = cluster default).")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -201,15 +204,16 @@ func main() {
 	}
 
 	if err := (&controller.IssueResolutionReconciler{
-		Client:           mgr.GetClient(),
-		Scheme:           mgr.GetScheme(),
-		TriageImage:      triageImage,
-		FixImage:         fixImage,
-		GeminiSecretName: geminiSecretName,
-		GeminiSecretKey:  geminiSecretKey,
-		GeminiModel:      geminiModel,
-		GitHubSecretName: githubSecretName,
-		GitHubSecretKey:  githubSecretKey,
+		Client:              mgr.GetClient(),
+		Scheme:              mgr.GetScheme(),
+		TriageImage:         triageImage,
+		FixImage:            fixImage,
+		GeminiSecretName:    geminiSecretName,
+		GeminiSecretKey:     geminiSecretKey,
+		GeminiModel:         geminiModel,
+		GitHubSecretName:    githubSecretName,
+		GitHubSecretKey:     githubSecretKey,
+		JobRuntimeClassName: jobRuntimeClassName,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "issueresolution")
 		os.Exit(1)

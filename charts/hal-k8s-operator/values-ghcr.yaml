@@ -1,0 +1,11 @@
+# GHCR overlay for installs from oci://ghcr.io/hashimiche/charts/hal-k8s-operator.
+# KinD POC keeps using values.yaml with local image names — do not commit secrets here.
+
+image:
+  repository: ghcr.io/hashimiche/hal-k8s-operator
+  tag: ""
+  pullPolicy: IfNotPresent
+  # tag empty → Chart.AppVersion (git tag, e.g. v1.0.0) via templates/_helpers.tpl
+
+fix:
+  image: "" # unset → ghcr.io/hashimiche/hal-k8s-operator-fix:<tag>

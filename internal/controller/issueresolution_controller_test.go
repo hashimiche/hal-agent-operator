@@ -162,6 +162,7 @@ var _ = Describe("IssueResolution Controller", func() {
 			}, job)).To(Succeed())
 			Expect(job.Spec.Template.Spec.Containers[0].Command).To(Equal([]string{"/triage"}))
 			Expect(job.Spec.Template.Spec.Containers[0].Env).To(ContainElement(HaveField("Name", "GEMINI_API_KEY")))
+			Expect(job.Spec.Template.Spec.Containers[0].Env).To(ContainElement(HaveField("Name", "GITHUB_TOKEN")))
 
 			updated := &agentv1alpha1.IssueResolution{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
@@ -169,7 +170,7 @@ var _ = Describe("IssueResolution Controller", func() {
 		})
 
 		It("should move to PendingValidation when triage Job succeeds with in-scope result", func() {
-			createSucceededJobWithMessage(`{"inScope":true,"suspicious":false,"summary":"doc fix ok","model":"test"}`)
+			createSucceededJobWithMessage(`{"inScope":true,"suspicious":false,"summary":"doc fix ok","model":"test","commentURL":"https://github.com/o/r/issues/1#issuecomment-9"}`)
 
 			_, err := newReconciler().Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
@@ -179,10 +180,12 @@ var _ = Describe("IssueResolution Controller", func() {
 			Expect(updated.Status.Phase).To(Equal(agentv1alpha1.PhasePendingValidation))
 			Expect(updated.Status.Triage.InScope).To(BeTrue())
 			Expect(updated.Status.Triage.Summary).To(Equal("doc fix ok"))
+			Expect(updated.Status.Plan.CommentURL).To(Equal("https://github.com/o/r/issues/1#issuecomment-9"))
+			Expect(updated.Status.Plan.Summary).To(Equal("doc fix ok"))
 		})
 
 		It("should move to Rejected when triage says out of scope", func() {
-			createSucceededJobWithMessage(`{"inScope":false,"suspicious":false,"summary":"needs Multipass","model":"test"}`)
+			createSucceededJobWithMessage(`{"inScope":false,"suspicious":false,"summary":"needs Multipass","model":"test","commentURL":"https://github.com/o/r/issues/1#issuecomment-8"}`)
 
 			_, err := newReconciler().Reconcile(ctx, reconcile.Request{NamespacedName: typeNamespacedName})
 			Expect(err).NotTo(HaveOccurred())
@@ -190,6 +193,7 @@ var _ = Describe("IssueResolution Controller", func() {
 			updated := &agentv1alpha1.IssueResolution{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
 			Expect(updated.Status.Phase).To(Equal(agentv1alpha1.PhaseRejected))
+			Expect(updated.Status.Plan.CommentURL).To(Equal("https://github.com/o/r/issues/1#issuecomment-8"))
 			cond := meta.FindStatusCondition(updated.Status.Conditions, agentv1alpha1.ConditionTriaged)
 			Expect(cond).NotTo(BeNil())
 			Expect(cond.Status).To(Equal(metav1.ConditionTrue))

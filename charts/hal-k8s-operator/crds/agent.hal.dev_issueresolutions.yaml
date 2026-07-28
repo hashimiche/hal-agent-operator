@@ -82,6 +82,12 @@ spec:
                 description: authorAssociation is GitHub's association (OWNER, MEMBER,
                   CONTRIBUTOR, NONE, …).
                 type: string
+              baseBranch:
+                description: |-
+                  baseBranch is the git ref Job 2 clones and uses as the PR base.
+                  Empty means the repository default branch. Fixture POC uses fixture/bug1 … fixture/bug4.
+                maxLength: 200
+                type: string
               body:
                 description: |-
                   body is a truncated snapshot of the issue body (prefer ≤16KiB).

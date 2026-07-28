@@ -104,23 +104,53 @@ the project, i.e.:
 kubectl apply -f https://raw.githubusercontent.com/<org>/hal-k8s-operator/<tag or branch>/dist/install.yaml
 ```
 
-### By providing a Helm Chart
+### Helm chart (OCI on GHCR)
 
-1. Build the chart using the optional helm plugin
+Published on every `v*` git tag by [`.github/workflows/publish.yml`](.github/workflows/publish.yml):
 
-```sh
-kubebuilder edit --plugins=helm/v2-alpha
+| Artifact | Reference |
+|---|---|
+| Operator image | `ghcr.io/hashimiche/hal-k8s-operator:<tag>` |
+| Fix Job image | `ghcr.io/hashimiche/hal-k8s-operator-fix:<tag>` |
+| Helm chart | `oci://ghcr.io/hashimiche/charts/hal-k8s-operator` |
+
+Chart `version` is the tag without the leading `v` (e.g. tag `v0.2.0` → chart `--version 0.2.0`).
+`appVersion` and image tags match the full git tag (e.g. `v0.2.0`).
+
+**Install from GHCR** (replace `0.2.0` / `v0.2.0` with your release):
+
+```bash
+export GEMINI_API_KEY='...'   # never commit
+export GITHUB_TOKEN='ghp_...' # never commit
+
+helm install hal-agent oci://ghcr.io/hashimiche/charts/hal-k8s-operator \
+  --version 0.2.0 \
+  --namespace hal-agent --create-namespace \
+  -f charts/hal-k8s-operator/values-ghcr.yaml \
+  --set gemini.apiKey="$GEMINI_API_KEY" \
+  --set github.token="$GITHUB_TOKEN"
 ```
 
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
+KinD POC with local images still uses [`values.yaml`](charts/hal-k8s-operator/values.yaml) — see [`POC.md`](POC.md).
 
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
+**Validate a release (after you push a `v*` tag):**
+
+1. Confirm the [Publish workflow](https://github.com/hashimiche/hal-k8s-operator/actions/workflows/publish.yml) succeeded.
+2. Confirm images exist: `docker pull ghcr.io/hashimiche/hal-k8s-operator:v0.2.0` (and `-fix`).
+3. On a cluster with pull access to GHCR (public packages, or `imagePullSecrets`):
+   ```bash
+   helm pull oci://ghcr.io/hashimiche/charts/hal-k8s-operator --version 0.2.0
+   tar -xzf hal-k8s-operator-0.2.0.tgz
+   helm install hal-agent ./hal-k8s-operator \
+     -f hal-k8s-operator/values-ghcr.yaml \
+     --namespace hal-agent --create-namespace \
+     --set gemini.apiKey="$GEMINI_API_KEY" \
+     --set github.token="$GITHUB_TOKEN"
+   ```
+4. For KinD smoke: create cluster, `helm install` as above (no `kind load` needed if GHCR is reachable).
+   Run the CR steps in [`POC.md`](POC.md) from step 4 onward.
+
+If GHCR packages are private, add a pull secret to the namespace or make the packages public under org settings.
 
 ## Contributing
 // TODO(user): Add detailed information on how you would like others to contribute to this project

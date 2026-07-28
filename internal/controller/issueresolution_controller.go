@@ -75,6 +75,8 @@ type IssueResolutionReconciler struct {
 	GitHubSecretName string
 	// GitHubSecretKey is the key inside that Secret.
 	GitHubSecretKey string
+	// JobRuntimeClassName is applied to triage/fix Job pod templates when non-empty.
+	JobRuntimeClassName string
 }
 
 type triageJobResult struct {
@@ -83,6 +85,7 @@ type triageJobResult struct {
 	Summary    string `json:"summary"`
 	Model      string `json:"model"`
 	ParseError bool   `json:"parseError,omitempty"`
+	CommentURL string `json:"commentURL,omitempty"`
 }
 
 // fixJobResult mirrors what /fix writes to the termination-log.
@@ -208,10 +211,14 @@ func (r *IssueResolutionReconciler) reconcileTriage(ctx context.Context, ir *age
 			Summary:    tr.Summary,
 			Model:      tr.Model,
 		}
+		ir.Status.Plan = agentv1alpha1.PlanStatus{
+			CommentURL: tr.CommentURL,
+			Summary:    tr.Summary,
+		}
 
 		if ir.Status.Triage.Suspicious || !ir.Status.Triage.InScope {
 			ir.Status.Phase = agentv1alpha1.PhaseRejected
-			ir.Status.Message = "Rejected by triage — see Job logs for Gemini analysis"
+			ir.Status.Message = "Rejected by triage — see GitHub comment / Job logs"
 			meta.SetStatusCondition(&ir.Status.Conditions, metav1.Condition{
 				Type:               agentv1alpha1.ConditionTriaged,
 				Status:             metav1.ConditionTrue,
@@ -223,7 +230,11 @@ func (r *IssueResolutionReconciler) reconcileTriage(ctx context.Context, ir *age
 		}
 
 		ir.Status.Phase = agentv1alpha1.PhasePendingValidation
-		ir.Status.Message = fmt.Sprintf("Triage OK. Gemini summary in status + Job logs (kubectl logs job/%s -n %s). Waiting for spec.approved=true", jobName, ir.Namespace)
+		if tr.CommentURL != "" {
+			ir.Status.Message = fmt.Sprintf("Triage OK. Plan comment: %s — waiting for spec.approved=true", tr.CommentURL)
+		} else {
+			ir.Status.Message = fmt.Sprintf("Triage OK. Gemini summary in status + Job logs (kubectl logs job/%s -n %s). Waiting for spec.approved=true", jobName, ir.Namespace)
+		}
 		meta.SetStatusCondition(&ir.Status.Conditions, metav1.Condition{
 			Type:               agentv1alpha1.ConditionTriaged,
 			Status:             metav1.ConditionTrue,
@@ -258,7 +269,12 @@ func (r *IssueResolutionReconciler) reconcileTriage(ctx context.Context, ir *age
 	return ctrl.Result{RequeueAfter: jobPollRequeue}, nil
 }
 
-func (r *IssueResolutionReconciler) reconcilePendingValidation(_ context.Context, ir *agentv1alpha1.IssueResolution) (ctrl.Result, error) {
+// reconcilePendingValidation advances PendingValidation → Ready when approved.
+// error is part of the shared reconcile helper signature (always nil here).
+func (r *IssueResolutionReconciler) reconcilePendingValidation(
+	_ context.Context,
+	ir *agentv1alpha1.IssueResolution,
+) (ctrl.Result, error) { //nolint:unparam // error kept for reconcile helper consistency
 	if !ir.Spec.Approved {
 		ir.Status.Message = "Waiting for spec.approved=true (POC: kubectl patch …)"
 		return ctrl.Result{RequeueAfter: pendingApprovalRequeue}, nil
@@ -390,6 +406,44 @@ func (r *IssueResolutionReconciler) buildFixJob(ir *agentv1alpha1.IssueResolutio
 	model := r.geminiModel()
 	jobName := fixJobName(ir, attempt)
 
+	env := []corev1.EnvVar{
+		{Name: "ISSUE_REPOSITORY", Value: ir.Spec.Repository},
+		{Name: "ISSUE_NUMBER", Value: fmt.Sprintf("%d", ir.Spec.IssueNumber)},
+		{Name: "ISSUE_TITLE", Value: ir.Spec.Title},
+		{Name: "ISSUE_BODY", Value: ir.Spec.Body},
+		{Name: "TRIAGE_SUMMARY", Value: ir.Status.Triage.Summary},
+		{Name: "GEMINI_MODEL", Value: model},
+		{
+			Name: "GEMINI_API_KEY",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: geminiSecret},
+					Key:                  geminiKey,
+				},
+			},
+		},
+		{
+			Name: "GITHUB_TOKEN",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: githubSecret},
+					Key:                  githubKey,
+				},
+			},
+		},
+		{Name: "BRANCH_NAME", Value: branch},
+		{Name: "FIX_ATTEMPT", Value: fmt.Sprintf("%d", attempt)},
+		{Name: "WORKDIR", Value: fixWorkDir},
+		{Name: "HOME", Value: fixWorkDir},
+		{Name: "GOCACHE", Value: fixWorkDir + "/.cache"},
+		{Name: "GOMODCACHE", Value: fixWorkDir + "/gomod"},
+		{Name: "GOPATH", Value: fixWorkDir + "/go"},
+		{Name: "TMPDIR", Value: fixWorkDir + "/tmp"},
+	}
+	if ir.Spec.BaseBranch != "" {
+		env = append(env, corev1.EnvVar{Name: "BASE_BRANCH", Value: ir.Spec.BaseBranch})
+	}
+
 	job := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      jobName,
@@ -431,40 +485,7 @@ func (r *IssueResolutionReconciler) buildFixJob(ir *agentv1alpha1.IssueResolutio
 									Drop: []corev1.Capability{"ALL"},
 								},
 							},
-							Env: []corev1.EnvVar{
-								{Name: "ISSUE_REPOSITORY", Value: ir.Spec.Repository},
-								{Name: "ISSUE_NUMBER", Value: fmt.Sprintf("%d", ir.Spec.IssueNumber)},
-								{Name: "ISSUE_TITLE", Value: ir.Spec.Title},
-								{Name: "ISSUE_BODY", Value: ir.Spec.Body},
-								{Name: "TRIAGE_SUMMARY", Value: ir.Status.Triage.Summary},
-								{Name: "GEMINI_MODEL", Value: model},
-								{
-									Name: "GEMINI_API_KEY",
-									ValueFrom: &corev1.EnvVarSource{
-										SecretKeyRef: &corev1.SecretKeySelector{
-											LocalObjectReference: corev1.LocalObjectReference{Name: geminiSecret},
-											Key:                  geminiKey,
-										},
-									},
-								},
-								{
-									Name: "GITHUB_TOKEN",
-									ValueFrom: &corev1.EnvVarSource{
-										SecretKeyRef: &corev1.SecretKeySelector{
-											LocalObjectReference: corev1.LocalObjectReference{Name: githubSecret},
-											Key:                  githubKey,
-										},
-									},
-								},
-								{Name: "BRANCH_NAME", Value: branch},
-								{Name: "FIX_ATTEMPT", Value: fmt.Sprintf("%d", attempt)},
-								{Name: "WORKDIR", Value: fixWorkDir},
-								{Name: "HOME", Value: fixWorkDir},
-								{Name: "GOCACHE", Value: fixWorkDir + "/.cache"},
-								{Name: "GOMODCACHE", Value: fixWorkDir + "/gomod"},
-								{Name: "GOPATH", Value: fixWorkDir + "/go"},
-								{Name: "TMPDIR", Value: fixWorkDir + "/tmp"},
-							},
+							Env: env,
 							VolumeMounts: []corev1.VolumeMount{
 								{Name: "workspace", MountPath: fixWorkDir},
 							},
@@ -482,6 +503,8 @@ func (r *IssueResolutionReconciler) buildFixJob(ir *agentv1alpha1.IssueResolutio
 			},
 		},
 	}
+
+	r.applyJobPodRuntimeClass(&job.Spec.Template.Spec)
 
 	if err := controllerutil.SetControllerReference(ir, job, r.Scheme); err != nil {
 		return nil, err
@@ -538,6 +561,8 @@ func (r *IssueResolutionReconciler) buildTriageJob(ir *agentv1alpha1.IssueResolu
 	image := r.triageImage()
 	secretName := r.geminiSecretName()
 	secretKey := r.geminiSecretKey()
+	githubSecret := r.githubSecretName()
+	githubKey := r.githubSecretKey()
 	model := r.geminiModel()
 	jobName := triageJobName(ir)
 
@@ -596,6 +621,15 @@ func (r *IssueResolutionReconciler) buildTriageJob(ir *agentv1alpha1.IssueResolu
 										},
 									},
 								},
+								{
+									Name: "GITHUB_TOKEN",
+									ValueFrom: &corev1.EnvVarSource{
+										SecretKeyRef: &corev1.SecretKeySelector{
+											LocalObjectReference: corev1.LocalObjectReference{Name: githubSecret},
+											Key:                  githubKey,
+										},
+									},
+								},
 							},
 						},
 					},
@@ -604,10 +638,18 @@ func (r *IssueResolutionReconciler) buildTriageJob(ir *agentv1alpha1.IssueResolu
 		},
 	}
 
+	r.applyJobPodRuntimeClass(&job.Spec.Template.Spec)
+
 	if err := controllerutil.SetControllerReference(ir, job, r.Scheme); err != nil {
 		return nil, err
 	}
 	return job, nil
+}
+
+func (r *IssueResolutionReconciler) applyJobPodRuntimeClass(spec *corev1.PodSpec) {
+	if r.JobRuntimeClassName != "" {
+		spec.RuntimeClassName = ptr.To(r.JobRuntimeClassName)
+	}
 }
 
 func (r *IssueResolutionReconciler) readTriageResult(ctx context.Context, ir *agentv1alpha1.IssueResolution, job *batchv1.Job) (triageJobResult, error) {

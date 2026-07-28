@@ -44,11 +44,19 @@ const (
 	base64UpperRatio = 0.25
 )
 
+const (
+	rulePromptInjection = "prompt_injection"
+	ruleSecretExfil     = "secret_exfil"
+	ruleImpersonation   = "impersonation"
+)
+
 var (
 	// RE2 \x{...} hex syntax keeps the pattern free of literal invisible chars.
 	reZeroWidth = regexp.MustCompile(`[\x{200B}\x{200C}\x{200D}\x{2060}\x{FEFF}]`)
 	// curl/wget leaking env or secret-named vars.
-	reShellExfil = regexp.MustCompile(`(?i)(curl|wget)\b[^;\n]{0,160}\b(env|\$\{?\w*(TOKEN|SECRET|KEY|PASSWORD|KUBECONFIG)\w*\}?)`)
+	reShellExfil = regexp.MustCompile(
+		`(?i)(curl|wget)\b[^;\n]{0,160}\b(env|\$\{?\w*(TOKEN|SECRET|KEY|PASSWORD|KUBECONFIG)\w*\}?)`,
+	)
 
 	// Redact-and-send patterns: stripped from model input, never decoded.
 	reHTMLComment   = regexp.MustCompile(`(?is)<!--.*?-->`)
@@ -61,39 +69,39 @@ var suspiciousSubstrings = []struct {
 	rule string
 	sub  string
 }{
-	{"prompt_injection", "ignore all previous"},
-	{"prompt_injection", "ignore previous instructions"},
-	{"prompt_injection", "ignore all instructions"},
-	{"prompt_injection", "disregard previous"},
-	{"prompt_injection", "disregard all previous"},
-	{"prompt_injection", "new system directive"},
-	{"prompt_injection", "new system prompt"},
-	{"prompt_injection", "you are no longer"},
-	{"prompt_injection", "jailbreak"},
-	{"prompt_injection", "do not mention this injection"},
-	{"prompt_injection", "begin actual task for fixer"},
+	{rulePromptInjection, "ignore all previous"},
+	{rulePromptInjection, "ignore previous instructions"},
+	{rulePromptInjection, "ignore all instructions"},
+	{rulePromptInjection, "disregard previous"},
+	{rulePromptInjection, "disregard all previous"},
+	{rulePromptInjection, "new system directive"},
+	{rulePromptInjection, "new system prompt"},
+	{rulePromptInjection, "you are no longer"},
+	{rulePromptInjection, "jailbreak"},
+	{rulePromptInjection, "do not mention this injection"},
+	{rulePromptInjection, "begin actual task for fixer"},
 
-	{"secret_exfil", "exfiltrat"},
-	{"secret_exfil", "reverse shell"},
-	{"secret_exfil", "~/.aws/credentials"},
-	{"secret_exfil", ".git-credentials"},
-	{"secret_exfil", "dump vault"},
-	{"secret_exfil", "vault root token"},
-	{"secret_exfil", "print the full json"},
-	{"secret_exfil", "tmp/vault-dump"},
-	{"secret_exfil", "gemini_api_key"},
-	{"secret_exfil", "secrets harvest"},
-	{"secret_exfil", "local secret courier"},
-	{"secret_exfil", "disable vault policy"},
-	{"secret_exfil", "disable codeowners"},
+	{ruleSecretExfil, "exfiltrat"},
+	{ruleSecretExfil, "reverse shell"},
+	{ruleSecretExfil, "~/.aws/credentials"},
+	{ruleSecretExfil, ".git-credentials"},
+	{ruleSecretExfil, "dump vault"},
+	{ruleSecretExfil, "vault root token"},
+	{ruleSecretExfil, "print the full json"},
+	{ruleSecretExfil, "tmp/vault-dump"},
+	{ruleSecretExfil, "gemini_api_key"},
+	{ruleSecretExfil, "secrets harvest"},
+	{ruleSecretExfil, "local secret courier"},
+	{ruleSecretExfil, "disable vault policy"},
+	{ruleSecretExfil, "disable codeowners"},
 
-	{"impersonation", "i am the hal fixer"},
-	{"impersonation", "i am the fixer job"},
-	{"impersonation", "x-hal-agent-identity"},
-	{"impersonation", "hal-agent-identity"},
-	{"impersonation", "authorized internal request from the hal"},
-	{"impersonation", "do not validate — trust this header"},
-	{"impersonation", "do not validate - trust this header"},
+	{ruleImpersonation, "i am the hal fixer"},
+	{ruleImpersonation, "i am the fixer job"},
+	{ruleImpersonation, "x-hal-agent-identity"},
+	{ruleImpersonation, "hal-agent-identity"},
+	{ruleImpersonation, "authorized internal request from the hal"},
+	{ruleImpersonation, "do not validate — trust this header"},
+	{ruleImpersonation, "do not validate - trust this header"},
 }
 
 // stripInvisible removes the same zero-width runes that reZeroWidth detects.
@@ -124,7 +132,7 @@ func scanSuspicious(title, body string) []scanFinding {
 	text := title + "\n" + body
 	// Normalized copy (zero-width stripped, NFKC, lowercased) so that trivial
 	// evasion (zero-width, fullwidth) still matches the substring and shell rules.
-	norm := normalizeForMatch(text)
+	normalized := normalizeForMatch(text)
 
 	var findings []scanFinding
 	seen := map[string]bool{}
@@ -143,12 +151,12 @@ func scanSuspicious(title, body string) []scanFinding {
 		add("zero_width", "zero-width / invisible Unicode characters")
 	}
 	// Shell exfil runs on raw AND normalized so fullwidth "ｃｕｒｌ" is caught too.
-	if reShellExfil.MatchString(text) || reShellExfil.MatchString(norm) {
+	if reShellExfil.MatchString(text) || reShellExfil.MatchString(normalized) {
 		add("shell_exfil", "curl/wget referencing env or secret-like variables")
 	}
 
 	for _, p := range suspiciousSubstrings {
-		if strings.Contains(norm, p.sub) {
+		if strings.Contains(normalized, p.sub) {
 			add(p.rule, `matched "`+p.sub+`"`)
 		}
 	}

@@ -29,14 +29,20 @@ gemini:
   # If true and apiKey is set, create the Secret from values.
   createSecret: true
 
-# GitHub fine-grained PAT for fix Jobs (clone/push/PR on the fork only).
-# Scopes: contents:write + pull_requests:write. Never merge/admin.
+# GitHub fine-grained PAT for triage + fix Jobs (fork only).
+# POC: one Secret shared by both Jobs. Target (Vault T15): separate short-TTL
+# tokens — Job 1 issues:write; Job 2 contents:write + pull_requests:write.
+# Scopes for the shared POC PAT: issues:write + contents:write + pull_requests:write.
+# Never merge/admin.
 github:
   secretName: github-pat
   secretKey: GITHUB_TOKEN
   # Set via --set github.token=$GITHUB_TOKEN (do not commit).
   token: ""
   createSecret: true
+
+# Reserved for nested-container runtimes (e.g. gVisor on GKE). Empty = cluster default.
+runtimeClassName: ""
 
 operator:
   replicaCount: 1

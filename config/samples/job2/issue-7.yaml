@@ -1,0 +1,48 @@
+# Job 2 KinD sample — pre-approved so triage → fix Job without a manual patch.
+# POC: baseBranch forces Job 2 onto the fixture RED branch (not main).
+apiVersion: agent.hal.dev/v1alpha1
+kind: IssueResolution
+metadata:
+  name: issue-7
+  namespace: hal-agent
+  labels:
+    app.kubernetes.io/name: hal-k8s-operator
+    hal.dev/repo: hashimiche-test-hal-operator
+    hal.dev/issue: "7"
+    hal.dev/fixture-branch: fixture-bug3
+spec:
+  repository: hashimiche/test-hal-operator
+  issueNumber: 7
+  issueURL: https://github.com/hashimiche/test-hal-operator/issues/7
+  author: hashimiche
+  authorAssociation: OWNER
+  title: "bug: hal boundary mariadb --with-vault cannot reach the Vault MariaDB target"
+  body: |
+    ### Description
+    `hal vault database enable` déploie et exploite correctement le MariaDB partagé.
+    Mais `hal boundary mariadb --with-vault` échoue à joindre ce même MariaDB : la
+    cible Boundary est créée avec un hôte qui ne correspond pas au conteneur
+    réellement démarré par Vault. Résultat : la connexion Boundary → MariaDB (via
+    creds dynamiques Vault) ne s'établit pas, alors que côté Vault tout est vert.
+
+    ### Steps to reproduce
+    1. `hal vault create && hal vault database enable`   (MariaDB partagé up, OK)
+    2. `hal boundary create`
+    3. `hal boundary mariadb --with-vault`
+    4. Tenter `boundary connect mysql ... -target-id <id>`
+
+    ### Expected / Actual
+    Attendu : Boundary cible le conteneur MariaDB géré par Vault et la connexion
+    aboutit. Constaté : la cible pointe vers un hôte inexistant ; connexion KO.
+    Le service MariaDB « marche côté Vault mais pas côté Boundary ».
+
+    ### OS / platform
+    Linux (WSL2)
+  labels:
+    - bug
+  createdAt: "2026-07-23T18:57:13Z"
+  baseBranch: fixture/bug3
+  approved: true
+  approvedBy: hashimiche
+  approvedAt: "2026-07-23T19:00:00Z"
+  maxFixAttempts: 2

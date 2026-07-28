@@ -1,0 +1,46 @@
+# Job 2 KinD sample — pre-approved so triage → fix Job without a manual patch.
+# POC: baseBranch forces Job 2 onto the fixture RED branch (not main).
+apiVersion: agent.hal.dev/v1alpha1
+kind: IssueResolution
+metadata:
+  name: issue-8
+  namespace: hal-agent
+  labels:
+    app.kubernetes.io/name: hal-k8s-operator
+    hal.dev/repo: hashimiche-test-hal-operator
+    hal.dev/issue: "8"
+    hal.dev/fixture-branch: fixture-bug4
+spec:
+  repository: hashimiche/test-hal-operator
+  issueNumber: 8
+  issueURL: https://github.com/hashimiche/test-hal-operator/issues/8
+  author: hashimiche
+  authorAssociation: OWNER
+  title: "bug: HAL MCP drops Vault PKI commands (validate_command + get_vault_pki_status)"
+  body: |
+    ### Description
+    La surface de commandes MCP a « perdu » Vault PKI. Deux symptômes liés :
+    - `validate_command` avec `hal vault pki` / `hal vault pki enable` répond
+      "invalide" ("unknown subcommand"), alors que la commande existe.
+    - `get_vault_pki_status` ne recommande plus `hal vault pki enable` dans
+      `recommended_commands`, donc l'assistant ne sait plus comment activer PKI.
+
+    ### Steps to reproduce
+    1. Outil MCP `validate_command` avec `{"command": "hal vault pki enable"}`.
+    2. Outil MCP `get_vault_pki_status` ; inspecter `recommended_commands`.
+
+    ### Expected / Actual
+    Attendu : `validate_command("hal vault pki enable") → valid: true` ; et
+    `get_vault_pki_status` liste `hal vault pki enable`.
+    Constaté : `valid: false` ; commande absente des recommandations.
+
+    ### OS / platform
+    Linux (WSL2)
+  labels:
+    - bug
+  createdAt: "2026-07-23T18:57:15Z"
+  baseBranch: fixture/bug4
+  approved: true
+  approvedBy: hashimiche
+  approvedAt: "2026-07-23T19:00:00Z"
+  maxFixAttempts: 2

@@ -37,8 +37,12 @@ control-plane: controller-manager
 {{- end }}
 {{- end }}
 
+{{- define "hal-k8s-operator.imageTag" -}}
+{{- default .Chart.AppVersion .Values.image.tag }}
+{{- end }}
+
 {{- define "hal-k8s-operator.image" -}}
-{{- printf "%s:%s" .Values.image.repository .Values.image.tag }}
+{{- printf "%s:%s" .Values.image.repository (include "hal-k8s-operator.imageTag" .) }}
 {{- end }}
 
 {{- define "hal-k8s-operator.triageImage" -}}
@@ -53,6 +57,6 @@ control-plane: controller-manager
 {{- if .Values.fix.image }}
 {{- .Values.fix.image }}
 {{- else }}
-{{- printf "%s-fix:%s" .Values.image.repository .Values.image.tag }}
+{{- printf "%s-fix:%s" .Values.image.repository (include "hal-k8s-operator.imageTag" .) }}
 {{- end }}
 {{- end }}

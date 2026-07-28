@@ -13,5 +13,6 @@ spec:
   title: ""
   body: ""
   labels: []
+  # baseBranch: fixture/bugN   # optional — fixture fork only; Job 2 clone + PR base (T11)
   approved: false
   maxFixAttempts: 2

@@ -25,6 +25,11 @@ ENTRYPOINT ["/manager"]
 
 # Fix Job image: needs Go toolchain for `go test` (decision T9/T10 #1).
 FROM golang:1.26 AS fix
+# Prefer IPv4 when dual-stack DNS returns A+AAAA but the KinD/Podman node has
+# no working IPv6 route (common on WSL2): otherwise `go mod` fails with
+# dial tcp [2607:...]:443: network is unreachable.
+USER root
+RUN printf 'precedence :ffff:0:0/96  100\n' >> /etc/gai.conf
 WORKDIR /
 COPY --from=builder /workspace/fix /fix
 USER 65532:65532
@@ -32,5 +37,6 @@ ENV HOME=/workspace \
     GOCACHE=/workspace/.cache \
     GOMODCACHE=/workspace/gomod \
     GOPATH=/workspace/go \
-    TMPDIR=/workspace/tmp
+    TMPDIR=/workspace/tmp \
+    GODEBUG=netdns=cgo
 ENTRYPOINT ["/fix"]

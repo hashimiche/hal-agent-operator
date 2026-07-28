@@ -1,0 +1,7 @@
+# KinD config for the HAL agent POC (IPv4-only).
+# Dual-stack / IPv6 egress is broken under Podman+WSL2 and makes Go module
+# downloads + Gemini calls fail with: dial tcp [...]:443: network is unreachable.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  ipFamily: ipv4
