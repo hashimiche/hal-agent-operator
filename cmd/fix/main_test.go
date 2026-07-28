@@ -98,7 +98,15 @@ func TestStripCodeFences(t *testing.T) {
 }
 
 func TestParseEditsAndApply(t *testing.T) {
-	src := "package mcp\n\nfunc isAllowedOrigin(h string) bool {\n\tswitch h {\n\tcase \"localhost\", \"127.0.0.2\", \"::1\":\n\t\treturn true\n\t}\n\treturn false\n}\n"
+	src := "" +
+		"package mcp\n\n" +
+		"func isAllowedOrigin(h string) bool {\n" +
+		"\tswitch h {\n" +
+		"\tcase \"localhost\", \"127.0.0.2\", \"::1\":\n" +
+		"\t\treturn true\n" +
+		"\t}\n" +
+		"\treturn false\n" +
+		"}\n"
 	raw := "*** Begin Edit ***\n*** Old ***\n\"127.0.0.2\"\n*** New ***\n\"127.0.0.1\"\n*** End Edit ***\n"
 	edits, err := parseEdits(raw)
 	if err != nil {
