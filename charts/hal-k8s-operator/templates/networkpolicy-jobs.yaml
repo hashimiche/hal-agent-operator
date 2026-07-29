@@ -1,0 +1,61 @@
+{{- if .Values.networkPolicy.enabled }}
+# Job egress allowlist (architecture §6). Standard NetworkPolicy cannot match
+# FQDNs — allow HTTPS to the public internet while denying RFC1918 / CGNAT /
+# link-local (blocks in-cluster Vault + GCE metadata). True FQDN pinning
+# (api.github.com + generativelanguage.googleapis.com only) needs Cilium later.
+#
+# DNS on GKE + Calico: pods resolve via kube-dns ClusterIP (e.g. 10.30.0.10).
+# Calico evaluates NetworkPolicy against that ClusterIP (pre-DNAT), so a
+# kube-system namespaceSelector alone is NOT enough. Allow UDP/TCP 53 to
+# private ranges + node-local-dns 169.254.20.10; keep HTTPS blocked to those
+# ranges (Vault :8200, metadata, in-cluster API).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "hal-k8s-operator.fullname" . }}-jobs-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "hal-k8s-operator.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: hal.dev/job-role
+        operator: In
+        values:
+          - triage
+          - fix
+  policyTypes:
+    - Egress
+  egress:
+    # In-cluster DNS: kube-dns ClusterIP, endpoint pods, and kube-system.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+        - ipBlock:
+            cidr: 10.0.0.0/8
+        - ipBlock:
+            cidr: 172.16.0.0/12
+        - ipBlock:
+            cidr: 192.168.0.0/16
+        - ipBlock:
+            cidr: 169.254.20.10/32
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # HTTPS: GitHub, Gemini, Go module proxy/sum (Job 2).
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}

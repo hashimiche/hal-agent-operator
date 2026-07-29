@@ -1,5 +1,8 @@
 # GHCR overlay for installs from oci://ghcr.io/hashimiche/charts/hal-k8s-operator.
 # KinD POC keeps using values.yaml with local image names — do not commit secrets here.
+#
+# Secrets: provisioned by VSO (Vault Secrets Operator) before or after helm install.
+# Do not pass --set gemini.apiKey / --set github.token — chart will not create Secrets.
 
 image:
   repository: ghcr.io/hashimiche/hal-k8s-operator
@@ -9,3 +12,17 @@ image:
 
 fix:
   image: "" # unset → ghcr.io/hashimiche/hal-k8s-operator-fix:<tag>
+
+# Enforce Job egress allowlist on GKE (requires Calico / network_policy addon).
+networkPolicy:
+  enabled: true
+
+# VSO syncs Vault → K8s Secret gemini-api (VaultStaticSecret). Operator reads
+# gemini.secretName / gemini.secretKey — defaults unchanged.
+gemini:
+  createSecret: false
+
+# VSO syncs Vault → K8s Secret github-pat (VaultDynamicSecret, T15 W2).
+# Operator reads github.secretName / github.secretKey — defaults unchanged.
+github:
+  createSecret: false

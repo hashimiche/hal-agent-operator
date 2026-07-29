@@ -327,3 +327,22 @@ kubectl -n hal-agent wait --for=condition=available deployment/hal-agent-hal-k8s
 Then continue from **Step 4** (apply a sample CR). Full install reference: [README § Helm chart (OCI on GHCR)](README.md#helm-chart-oci-on-ghcr).
 
 **Blockers without a real tag push:** local `helm package` / `helm template` only; OCI `helm install` needs a published chart and pullable GHCR images.
+
+---
+
+## Optional — deploy on GKE (T14)
+
+Lab cluster from `hal-agent-infra` + GHCR images. Full runbook:
+[`docs/plans/T14-deploy-operator-gke.md`](docs/plans/T14-deploy-operator-gke.md).
+
+```bash
+# From hal-agent-infra/envs/lab — get-credentials, then from operator repo:
+helm upgrade --install hal-agent ./charts/hal-k8s-operator \
+  --namespace hal-agent --create-namespace \
+  -f charts/hal-k8s-operator/values-ghcr.yaml \
+  --set image.tag=v0.0.2 \
+  --set gemini.apiKey="$GEMINI_API_KEY" \
+  --set github.token="$GITHUB_TOKEN"
+```
+
+Then POC steps 4–8 on GKE (same CR / approve / PR flow as KinD).

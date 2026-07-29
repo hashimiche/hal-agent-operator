@@ -465,7 +465,8 @@ func (r *IssueResolutionReconciler) buildFixJob(ir *agentv1alpha1.IssueResolutio
 					},
 				},
 				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyNever,
+					RestartPolicy:                corev1.RestartPolicyNever,
+					AutomountServiceAccountToken: ptr.To(false),
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: ptr.To(true),
 						RunAsUser:    ptr.To(int64(65532)),
@@ -586,7 +587,8 @@ func (r *IssueResolutionReconciler) buildTriageJob(ir *agentv1alpha1.IssueResolu
 					},
 				},
 				Spec: corev1.PodSpec{
-					RestartPolicy: corev1.RestartPolicyNever,
+					RestartPolicy:                corev1.RestartPolicyNever,
+					AutomountServiceAccountToken: ptr.To(false),
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: ptr.To(true),
 						SeccompProfile: &corev1.SeccompProfile{

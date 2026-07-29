@@ -20,29 +20,35 @@ triage:
 fix:
   image: "hal-k8s-operator-fix:poc"
 
-# Gemini API key for triage/fix Jobs (POC: plain K8s Secret, not Vault yet).
+# Gemini API key for triage/fix Jobs.
+# KinD POC: createSecret true + --set gemini.apiKey (Helm renders Secret gemini-api).
+# GKE: use values-ghcr.yaml (createSecret false); VSO VaultStaticSecret syncs gemini-api.
 gemini:
   secretName: gemini-api
   secretKey: GEMINI_API_KEY
-  # Set via --set gemini.apiKey=$GEMINI_API_KEY (do not commit).
+  # KinD only — --set gemini.apiKey=$GEMINI_API_KEY (do not commit).
   apiKey: ""
-  # If true and apiKey is set, create the Secret from values.
   createSecret: true
 
-# GitHub fine-grained PAT for triage + fix Jobs (fork only).
-# POC: one Secret shared by both Jobs. Target (Vault T15): separate short-TTL
-# tokens — Job 1 issues:write; Job 2 contents:write + pull_requests:write.
-# Scopes for the shared POC PAT: issues:write + contents:write + pull_requests:write.
-# Never merge/admin.
+# GitHub token for triage + fix Jobs (fork only).
+# KinD POC: createSecret true + --set github.token (Helm renders Secret github-pat).
+# GKE: use values-ghcr.yaml (createSecret false); VSO syncs github-pat from Vault.
+# POC PAT scopes: issues:write + contents:write + pull_requests:write. Never merge/admin.
 github:
   secretName: github-pat
   secretKey: GITHUB_TOKEN
-  # Set via --set github.token=$GITHUB_TOKEN (do not commit).
+  # KinD only — --set github.token=$GITHUB_TOKEN (do not commit).
   token: ""
   createSecret: true
 
 # Reserved for nested-container runtimes (e.g. gVisor on GKE). Empty = cluster default.
 runtimeClassName: ""
+
+# Job egress NetworkPolicy (hal.dev/job-role=triage|fix). Off for KinD
+# (kindnet often does not enforce); enable on GKE via values-ghcr.yaml once
+# the cluster NetworkPolicy addon (Calico) is on — see T14 runbook.
+networkPolicy:
+  enabled: false
 
 operator:
   replicaCount: 1

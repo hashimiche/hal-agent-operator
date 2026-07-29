@@ -18,13 +18,14 @@
    update the status column, and move the **Current position** pointer.
 4. Never skip a `BLOCKING` task. Never edit generated files by hand.
 
-**Current position:** `T12 — CI publish: image GHCR + Helm chart`
+**Current position:** `T15 — VSO + Vault (infra / operator split)` — **vague 1 lab mostly done**
 
-> Next operator work: T12 (publish operator + fix images and Helm chart to
-> GHCR). T13 done (2026-07-29): `hal-agent-infra` apply OK + green smoke WIF
-> (OIDC → WIF → kubectl, no JSON key). T11 validated on KinD (2026-07-28):
-> issue #5/#6 → `PROpen`; #8 multi-file limit confirmed (expected fail). T16
-> approval workflow landed in the `hal` fork; `create-cr` + env/E2E remain.
+> Pause 2026-07-29: VSO Gemini SYNCED; GitHub App plugin + `vault read github/token/triage`
+> OK (JIT). Vault lab has `-dev-plugin-dir`. Chart `createSecret: false` (GKE values).
+> **Next (2026-07-30):** T15 wave 2 — `VaultDynamicSecret` → Jobs (drop PAT); then OCI
+> retag `v0.0.3` (NP missing from `0.0.2`); E2E VSO-only → `PROpen`. Campaign plan:
+> Cursor plan `t15_vso_vault_campaign`. WIF = GHA→GCP/GKE only; controller never
+> talks to GH/Vault. T14 done; T12 `v0.0.2` on GHCR; T16 `create-cr` still open.
 
 ## Progress tracker
 
@@ -42,10 +43,10 @@
 | T9 | [x] done | operator | Controller phases Ready/Executing/PROpen/Failed |
 | T10 | [x] done | operator | `cmd/fix` binary + separate fix image |
 | T11 | [x] done | operator | Chart + runbook for Job 2 (KinD) |
-| T12 | [ ] todo | operator | CI publish: image GHCR + Helm chart |
+| T12 | [x] done | operator | CI publish: image GHCR + Helm chart |
 | T13 | [x] done | `hal-agent-infra` | TF GKE/Vault/WIF/RBAC + smoke WIF (2026-07-29) |
-| T14 | [ ] todo | operator | Deploy operator on GKE |
-| T15 | [ ] todo | infra + operator | Vault integration |
+| T14 | [x] done | operator | Deploy operator on GKE |
+| T15 | [~] partial | infra + operator | VSO Gemini + GH App token CLI OK ; DynamicSecret/Jobs + OCI v0.0.3 remain |
 | T16 | [~] partial | `hal` fork | Approve workflow done; `create-cr` + env/E2E remain |
 | T17 | [ ] todo | operator | Hardening & ops |
 | T18 | [ ] todo | operator + infra | Docs (ROADMAP.md + infra README) |
@@ -55,12 +56,14 @@
 Triage POC runs: `IssueResolution` CR → triage Job → Gemini → `status.triage`,
 phase `PendingValidation`, then `spec.approved` → `Ready`. **Job 2 is wired in
 code (T9–T10):** `Ready` → `Executing` → `PROpen` (retries via
-`spec.maxFixAttempts`). Secrets for the POC = K8s Secret `gemini-api` (+ GitHub
-PAT for fix Jobs until Vault at T15).
+`spec.maxFixAttempts`). Secrets for the POC = K8s Secret `gemini-api` (+ GitHub PAT for fix Jobs until
+T15). Target state (T15): **Vault Secrets Operator (VSO)** syncs Vault secrets
+into K8s Secrets consumed by Jobs via existing `SecretKeyRef` — no init-container
+Vault auth in Job pods.
 
 Target: issue GitHub → Action → CR on GKE → triage Job → `"agent go"` → fix Job
-→ PR (human merge). Secrets via Vault. Passwordless auth GH↔GCP/GKE and
-Jobs↔Vault (OIDC / Workload Identity Federation).
+→ PR (human merge). Secrets via Vault + VSO. Passwordless GHA→GKE auth via WIF
+(OIDC); GitHub tokens JIT from Vault (GitHub App + dynamic secrets plugin).
 
 Command entry point: **`task`** (go-task, [`Taskfile.yml`](Taskfile.yml)). The
 Makefile is the internal Kubebuilder engine — go through `task`.
@@ -103,7 +106,7 @@ flowchart LR
   subgraph cloud [On GKE]
     Deploy[T14 Helm operator]
     GHA[T16 Actions]
-    Vlt[T15 Vault auth Jobs]
+    Vlt[T15 VSO Vault sync]
   end
   F --> J2 --> Chart --> Pub
   J2 --> TF --> Deploy --> GHA
@@ -265,6 +268,10 @@ only).
 **Acceptance**: a tag pushes image(s) + chart; `helm install` of a published
 version works on a fresh cluster (KinD first).
 
+**Note (2026-07-29)**: Publish workflow green on tag `v0.0.2` (fixed invalid
+action SHAs). Artifacts: `ghcr.io/hashimiche/hal-k8s-operator(:-fix):v0.0.2`
++ `oci://ghcr.io/hashimiche/charts/hal-k8s-operator` `0.0.2`.
+
 ---
 
 ## T13 — Repo `hal-agent-infra` (IaC + trust boundaries)
@@ -310,6 +317,10 @@ sequenceDiagram
   Vault->>Job: dynamic GH token + LLM key
 ```
 
+> **Superseded at T15:** Jobs no longer authenticate to Vault directly.
+> **Vault Secrets Operator** syncs secrets into K8s Secrets; see T15 and
+> `docs/operator-architecture.md` §6.
+
 **Acceptance** ✅: `terraform apply` OK; smoke `workflow_dispatch` (OIDC → WIF →
 `kubectl get ns` / soft `kubectl get issueresolutions -n hal-agent`) succeeded
 **without a JSON key** (2026-07-29).
@@ -319,6 +330,7 @@ sequenceDiagram
 ## T14 — Deploy the operator on GKE
 
 **Repo**: operator, consuming `hal-agent-infra` outputs.
+**Runbook**: [`docs/plans/T14-deploy-operator-gke.md`](docs/plans/T14-deploy-operator-gke.md).
 
 **To do**:
 
@@ -331,22 +343,53 @@ sequenceDiagram
 **Acceptance**: KinD scenario replayed on GKE with a manual CR → triage →
 approve → fix → PR.
 
+**Note (2026-07-29)**: GKE lab OK — Helm `hal-agent` + GHCR `v0.0.2`, Calico NP
+(DNS allow ClusterIP pre-DNAT), samples `job2/issue-5` (+ #6) → `PROpen`.
+Secrets still K8s until T15. Runbook: `docs/plans/T14-deploy-operator-gke.md`.
+
 ---
 
-## T15 — Vault (infra / operator split)
+## T15 — VSO + Vault (infra / operator split)
+
+**Decision (2026-07-29):** secret delivery = **Vault Secrets Operator (VSO)**,
+not init-container Vault auth in Job pods. VSO is a **cluster component** (Helm
+in `hal-agent-infra`); it is **not** bundled in the `hal-k8s-operator` image.
+Jobs keep `SecretKeyRef` — **zero controller change** if Secret names/keys stay
+stable (`gemini-api`, `github-triage` / `github-fix` or chart defaults).
 
 **To do**:
 
-- **`hal-agent-infra`**: finalize Kubernetes auth, roles, policies, engines (if
-  not already at T13).
-- **`hal-k8s-operator`** (chart): **init-container** pattern Vault → shared
-  volume; annotated Job SAs; remove/neutralize POC Secrets (`gemini-api`, PAT).
-- Job 1: LLM key (+ issue-read token if GitHub comment/label enabled).
-- Job 2: token `contents:write` + `pull_requests:write` + LLM.
-- Controller: **never** a Vault/GitHub client (golden rule).
+| Layer | Work |
+|---|---|
+| **`hal-agent-infra`** | Install VSO (Helm); `VaultConnection` + `VaultAuth` (kubernetes auth for VSO SA); policies. **Gemini:** KV (`hal-agent/llm`) → `VaultStaticSecret` → K8s Secret `gemini-api`. **GitHub:** create GitHub App; lodge App ID + private key in Vault; enable [`vault-plugin-secrets-github`](https://github.com/martinbaillie/vault-plugin-secrets-github) (or maintained fork) → `VaultDynamicSecret`(s) → K8s Secrets for triage/fix (scopes: Job 1 `issues:write`; Job 2 `contents:write` + `pull_requests:write`). NP: VSO pods → Vault egress; Job NP unchanged (GitHub + LLM only — Jobs **never** contact Vault). |
+| **`hal-k8s-operator`** (chart/values/docs) | `createSecret: false` for GKE (no `--set gemini.apiKey` / `github.token` plaintext); document that Secrets come from VSO CRs. Retag/publish chart if Job NP missing from OCI `0.0.2`. |
+| **Controller** | **No** Vault/GitHub client (golden rule). Still creates Jobs with `SecretKeyRef` only. |
 
-**Acceptance**: Jobs OK with no plaintext secret in Helm values; no secret in
-the CR or controller logs.
+**Trust boundaries (unchanged / clarified):**
+
+- **WIF** = GitHub Actions → GCP/GKE only (not operator ↔ GitHub).
+- **GitHub tokens** = GitHub App JWT → installation token short-TTL via Vault
+  plugin — not WIF, not a long-lived PAT in Helm.
+- Job SAs: `automountServiceAccountToken: false`, no K8s API rights — they read
+  synced Secrets only; they do not authenticate to Vault.
+
+**Campaign order** (see plan `t15_vso_vault_campaign`): (1) Helm OCI from GHCR,
+(2) WIF smoke (already OK), (3) VSO + Gemini static secret, (4) GitHub App +
+`VaultDynamicSecret`, (5) E2E GKE with VSO-only secrets → `PROpen`.
+
+**Acceptance**:
+
+- Jobs succeed with **no plaintext secret** in Helm values, CR, or controller
+  logs.
+- Gemini key and GitHub tokens arrive via VSO-synced K8s Secrets (not chart
+  `createSecret`, not init-container).
+- Job 1 comments/labels; Job 2 opens PR **without** a long-lived PAT in cluster
+  or Helm; GitHub token TTL short and renewable (Vault/VSO observable).
+- Controller still never calls Vault or GitHub.
+
+**Trade-off vs init-container:** GitHub token lives in a K8s Secret (namespace
+RBAC must stay tight) rather than only on an ephemeral `emptyDir`. Accepted for
+VSO simplicity and stable `SecretKeyRef` contract.
 
 ---
 

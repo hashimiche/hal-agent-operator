@@ -37,8 +37,9 @@ flowchart TD
 | **GitHub Action** | On `issues.opened`: create the CR. On `issue_comment` `"agent go"`: check CODEOWNERS, then patch `spec.approved=true`. Authenticates to the cluster via OIDC / Workload Identity Federation | No (workflows live in the target repo) |
 | **Operator (controller)** | Reconcile `IssueResolution`: spawn/watch Jobs, advance `status.phase`, never handle secrets | **Yes — the core of this repo** |
 | **Job 1 (triage)** | Text-only analysis, comments the plan, applies label `agent: pending-validation`, writes the diagnosis, exits | Image / entrypoint defined here; runs as a Job |
-| **Job 2 (fix)** | Generates code, runs the tests, pushes + opens PR; secrets via K8s Secret (POC) then Vault init-container | Same |
-| **Vault** | K8s auth + dynamic GitHub / LLM secrets | Cluster infra, outside the operator |
+| **Job 2 (fix)** | Generates code, runs the tests, pushes + opens PR; secrets via K8s Secret (KinD POC) then VSO-synced Secrets from Vault (T15) | Same |
+| **Vault Secrets Operator (VSO)** | Syncs Vault secrets into K8s Secrets (`VaultStaticSecret` / `VaultDynamicSecret`); cluster infra in `hal-agent-infra`, not in the operator image | No |
+| **Vault** | KV (Gemini key) + GitHub App dynamic tokens (JIT, short TTL) | Cluster infra, outside the operator |
 | **Human** | Gate #1: `"agent go"` comment; gate #2: PR review/merge | — |
 
 **Golden rule for the operator:** it never talks to GitHub or Vault. It only reads/writes CRs and Jobs. The Jobs and the GitHub Action are the only Vault/GitHub clients.
@@ -158,13 +159,42 @@ On every reconcile, for one `IssueResolution`:
 
 ## 6. Security (constraints the operator must respect)
 
-### Secrets (JIT & K8s auth) — Job side, not controller
+### Secrets — VSO sync into K8s Secrets (Job side, not controller)
 
-- Jobs authenticate to Vault via `auth/kubernetes` (ServiceAccount JWT).
-- Dynamic GitHub tokens (`github/` engine), short TTL (~5 min), minimal scopes:
-  - Job 1: `issues:write` (comment + label)
-  - Job 2: `contents:write` + `pull_requests:write` (push + PR) — never merge/admin
+> **Decision (2026-07-29) — VSO, not init-container.** Secret delivery uses
+> [Vault Secrets Operator](https://developer.hashicorp.com/vault/docs/platform/k8s/vso)
+> (Helm in `hal-agent-infra`). VSO authenticates to Vault (kubernetes auth for
+> the VSO ServiceAccount) and syncs into K8s Secrets that Jobs mount via
+> `SecretKeyRef`. The controller unchanged: it still references Secret
+> names/keys; it never talks to Vault or GitHub.
+
+**Gemini (static):** KV path (e.g. `hal-agent/llm`) → `VaultStaticSecret` →
+K8s Secret `gemini-api` (same name/key as KinD POC).
+
+**GitHub (dynamic, JIT):** GitHub App (App ID + private key in Vault) +
+[`vault-plugin-secrets-github`](https://github.com/martinbaillie/vault-plugin-secrets-github)
+→ `VaultDynamicSecret` → K8s Secret(s) for triage/fix. Vault signs an App JWT
+and exchanges an **installation token** with short TTL (~1 h); VSO renews before
+expiry. **No long-lived PAT** in Helm or the cluster.
+
+| Job | Token scopes (minimal) |
+|---|---|
+| Job 1 (triage) | `issues:write` (comment + label) |
+| Job 2 (fix) | `contents:write` + `pull_requests:write` (push + PR) — never merge/admin |
+
+**Auth boundaries:**
+
+- **WIF (OIDC)** = GitHub Actions → GCP/GKE only — not operator ↔ GitHub, not
+  Vault ↔ GitHub.
+- Job ServiceAccounts: **no** Vault kubernetes auth, **no** K8s API rights,
+  `automountServiceAccountToken: false`. Jobs read synced Secrets only.
 - **No secret in the CR** (readable through RBAC `get` in etcd).
+
+**Trade-off vs init-container:** With init-container, tokens could live only on
+an ephemeral `emptyDir` shared volume (never a cluster Secret object). With VSO,
+the GitHub token exists as a K8s Secret object — simpler Job spec and stable
+`SecretKeyRef`, but **namespace RBAC on `secrets` must stay tight** (VSO writer;
+Job pods reader via mount only). Accepted for the lab POC.
 
 ### Job 2 isolation
 
@@ -194,10 +224,14 @@ The boundary chosen for the POC is therefore a hardened pod, defense in depth:
 - `securityContext`: non-root, `allowPrivilegeEscalation: false`,
   `capabilities.drop: [ALL]`, `seccompProfile: RuntimeDefault`,
   `readOnlyRootFilesystem` except an `emptyDir` workspace.
-- **NetworkPolicy:** egress = GitHub + LLM endpoint only. **No** access to the Kubernetes API or to Vault from the main container.
+- **NetworkPolicy:** egress = GitHub + LLM endpoint only. **No** access to the
+  Kubernetes API or to Vault from Job pods. VSO (separate Deployment) needs its
+  own egress allowlist to Vault — not opened from Job containers.
 - Dedicated ServiceAccount with **no rights at all** on the Kubernetes API, `automountServiceAccountToken: false`.
 - CPU/RAM limits **and `activeDeadlineSeconds`** (protection against a runaway test loop — size it against the ~37 s baseline above; ~300 s leaves margin).
-- **Init-container**: Vault auth → writes the GitHub token (+ LLM key if needed) into a shared volume → the main container no longer has Vault access. *(Vault phase; in the POC, a K8s Secret mounted directly.)*
+- **Secrets mount:** KinD POC uses chart-created K8s Secrets (`gemini-api`,
+  `github-pat`). **T15 (GKE):** VSO syncs Vault → K8s Secrets; Jobs keep
+  `SecretKeyRef` — no init-container Vault auth in the Job pod.
 
 The day the target to fix needs Docker for its tests is the day the Sysbox
 question reopens — alongside the alternatives of a dedicated node or an external
@@ -217,7 +251,8 @@ introduced in §2, and it must be kept tight.
 
 - Job 1 = analysis only, zero code execution → an aberrant plan is blocked by the CODEOWNER (`"agent go"`).
 - Job 2 only exists after a human gate validated both cryptographically and hierarchically.
-- The model never sees the publish GitHub token (temporal separation init vs run, or model phase then publish phase).
+- The model never sees the publish GitHub token (separate Secret / scope for fix
+  vs triage; short TTL via Vault dynamic secrets).
 
 ---
 
@@ -227,7 +262,7 @@ To be built **after** the controller skeleton + CRD + reconcile stub:
 
 - GitHub Action workflows (CR creation + CODEOWNERS + `spec.approved` patch)
 - Job 1 / Job 2 images + `CodeFixProvider`
-- Vault / NetworkPolicy manifests
+- Vault Secrets Operator + NetworkPolicy manifests (`hal-agent-infra`)
 - Dashboard (optional) — the primary gate here is the GitHub `"agent go"` comment, not a UI
 
 ---
@@ -276,7 +311,11 @@ the termination-log.
 > criterion that matters for a demonstrable POC. Moving to multi-file / diff is a
 > later evolution.
 
-**Job 2 secrets in the POC**: Vault is a later phase; meanwhile, a K8s Secret
-holding a fine-grained PAT restricted to the fork alone, scopes
-`contents:write` + `pull_requests:write`. Same pattern as the existing
-`gemini-api` Secret in the chart.
+**Job 2 secrets:**
+
+- **KinD POC:** K8s Secret `github-pat` (fine-grained PAT on the fork) +
+  `gemini-api`, created by the chart.
+- **GKE / T15:** VSO `VaultStaticSecret` → `gemini-api`; VSO
+  `VaultDynamicSecret` → GitHub token Secret(s) from GitHub App + Vault plugin
+  (JIT, short TTL). Chart `createSecret: false`; no plaintext in Helm values.
+  Controller still uses `SecretKeyRef` — same contract, different provenance.
