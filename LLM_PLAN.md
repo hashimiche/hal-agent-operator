@@ -21,9 +21,10 @@
 **Current position:** `T12 — CI publish: image GHCR + Helm chart`
 
 > Next operator work: T12 (publish operator + fix images and Helm chart to
-> GHCR). T11 validated on KinD (2026-07-28): issue #5/#6 → `PROpen`; #8
-> multi-file limit confirmed (expected fail). T16 approval workflow landed in
-> the `hal` fork; `create-cr` + env/E2E remain.
+> GHCR). T13 done (2026-07-29): `hal-agent-infra` apply OK + green smoke WIF
+> (OIDC → WIF → kubectl, no JSON key). T11 validated on KinD (2026-07-28):
+> issue #5/#6 → `PROpen`; #8 multi-file limit confirmed (expected fail). T16
+> approval workflow landed in the `hal` fork; `create-cr` + env/E2E remain.
 
 ## Progress tracker
 
@@ -42,7 +43,7 @@
 | T10 | [x] done | operator | `cmd/fix` binary + separate fix image |
 | T11 | [x] done | operator | Chart + runbook for Job 2 (KinD) |
 | T12 | [ ] todo | operator | CI publish: image GHCR + Helm chart |
-| T13 | [ ] todo | `hal-agent-infra` | TF GKE/Vault/WIF/RBAC + smoke WIF |
+| T13 | [x] done | `hal-agent-infra` | TF GKE/Vault/WIF/RBAC + smoke WIF (2026-07-29) |
 | T14 | [ ] todo | operator | Deploy operator on GKE |
 | T15 | [ ] todo | infra + operator | Vault integration |
 | T16 | [~] partial | `hal` fork | Approve workflow done; `create-cr` + env/E2E remain |
@@ -272,23 +273,23 @@ version works on a fresh cluster (KinD first).
 (avoid paying for GKE during the fix iteration). **All** Terraform lives here —
 no `.tf` in `hal-k8s-operator`.
 
-**To do**:
+**Done** (2026-07-29, POC / short-lived GCP project):
 
-- Bootstrap: README (trust model, GCP/org prerequisites, consumed outputs),
-  layout `modules/{gke,vault,wif}` + `envs/lab`, remote state (GCS), CI
-  `terraform fmt/validate/plan` (manual apply / protected environment).
-- Reuse / module-ize the GKE Terraform already present on the Hashicorp academy
-  side (don't blindly duplicate).
-- TF scope:
+- Layout `modules/{gke,wif,vault,rbac}` + `envs/{bootstrap,lab}`; README trust
+  model + outputs. **Local Terraform state** (GCS optional, not required for
+  POC). TF apply is **local only** — GitHub Actions keeps `smoke-wif.yml` only
+  (no TF CI workflow).
+- `envs/bootstrap`: runner SA + IAM + APIs; lab apply via
+  `GOOGLE_IMPERSONATE_SERVICE_ACCOUNT` (no JSON key).
+- TF scope delivered:
   1. **GCP WIF + SA** — GitHub OIDC pool/provider; condition
-     `attribute.repository` (+ environment); SA with limited GKE rights.
-  2. **GKE** — **Standard** cluster + node pool; Workload Identity; base
-     network; namespace `hal-agent`.
-  3. **Vault** — `kubernetes` auth; Job1/Job2 roles; engines / dynamic GitHub
-     App or PAT + LLM; least-privilege policies.
+     `attribute.repository` (+ environment); deployer SA with limited GKE rights.
+  2. **GKE** — Standard cluster + node pool; Workload Identity; namespace
+     `hal-agent`.
+  3. **Vault** — Helm + Job SAs; kubernetes auth/policies via second apply
+     (`vault_configure_auth`).
   4. **K8s RBAC for the GHA runner** — namespaced Role/RoleBinding:
-     `create/get/patch` on `issueresolutions` only; **no** verbs on `status`;
-     no Secrets/Vault access.
+     `create/get/patch` on `issueresolutions` only; **no** verbs on `status`.
   5. **Outputs** — `cluster_name`, `cluster_location`, `project_id`,
      `wif_provider`, `deployer_sa_email`, `vault_addr`, `hal_agent_namespace`.
 
@@ -309,14 +310,9 @@ sequenceDiagram
   Vault->>Job: dynamic GH token + LLM key
 ```
 
-**Acceptance**: `terraform apply` OK; smoke `workflow_dispatch` (OIDC → WIF →
-`kubectl get ns` / `kubectl get issueresolutions -n hal-agent`) succeeds
-**without a JSON key**.
-
-**Scaffold note (T13f code delivery):** Modules GKE/WIF/Vault/RBAC are composed
-in `hal-agent-infra` `envs/lab` with the required root outputs; smoke workflow
-`.github/workflows/smoke-wif.yml` is present. Tracker stays `[ ]` until a human
-completes real `terraform apply` + green smoke (no GCP assumed in CI scaffold).
+**Acceptance** ✅: `terraform apply` OK; smoke `workflow_dispatch` (OIDC → WIF →
+`kubectl get ns` / soft `kubectl get issueresolutions -n hal-agent`) succeeded
+**without a JSON key** (2026-07-29).
 
 ---
 
@@ -389,6 +385,10 @@ fork → CR on GKE → triage → `"agent go"` → Job 2 → PR; human merge onl
 - Incident runbooks: revoke Vault role / WIF SA (procedures in
   `hal-agent-infra`).
 - Dashboard: **deferred** (primary gate = GitHub comment).
+- **Nice-to-have (CI UX):** merge Kubebuilder `lint.yml` / `test.yml` /
+  `test-e2e.yml` into one workflow with 3 parallel jobs — today a one-file
+  lint fix still fires three separate Actions (same `push`/`pull_request`
+  triggers). Keep `publish.yml` separate (tag/release only).
 
 **Acceptance**: reproducible end-to-end on GKE + basic alerting in place.
 
