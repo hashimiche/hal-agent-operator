@@ -30,16 +30,25 @@ gemini:
   apiKey: ""
   createSecret: true
 
-# GitHub token for triage + fix Jobs (fork only).
-# KinD POC: createSecret true + --set github.token (Helm renders Secret github-pat).
-# GKE: use values-ghcr.yaml (createSecret false); VSO syncs github-pat from Vault.
+# GitHub tokens for triage + fix Jobs (fork only).
+# KinD POC: createSecret true + --set github.token (Helm renders BOTH Secrets
+# github-triage and github-fix from the same PAT).
+# GKE: use values-ghcr.yaml (createSecret false); VSO syncs distinct Secrets.
 # POC PAT scopes: issues:write + contents:write + pull_requests:write. Never merge/admin.
 github:
-  secretName: github-pat
+  triageSecretName: github-triage
+  fixSecretName: github-fix
   secretKey: GITHUB_TOKEN
   # KinD only — --set github.token=$GITHUB_TOKEN (do not commit).
   token: ""
   createSecret: true
+
+# Job pod ServiceAccounts (identity alignment with VSO VaultAuth SAs on GKE).
+# KinD: create empty SAs here. GKE: infra creates them; set create: false.
+jobServiceAccounts:
+  create: true
+  triage: hal-job-triage
+  fix: hal-job-fix
 
 # Reserved for nested-container runtimes (e.g. gVisor on GKE). Empty = cluster default.
 runtimeClassName: ""

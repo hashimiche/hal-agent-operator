@@ -112,16 +112,18 @@ task kind-poc-image
 task kind-poc-helm    # requires GEMINI_API_KEY + GITHUB_TOKEN
 ```
 
-This installs: CRD, operator Deployment, RBAC, `gemini-api` Secret, `github-pat` Secret,
-and wires `fix.image` for Job 2.
+This installs: CRD, operator Deployment, RBAC, Secrets `gemini-api` /
+`github-triage` / `github-fix` (KinD: chart may populate both GitHub Secrets
+from one `--set github.token`), Job SAs `hal-job-triage` / `hal-job-fix`, and
+wires `fix.image` for Job 2.
 
 **✅ Check**:
 
 ```bash
-kubectl -n hal-agent get deploy,pods,secret
+kubectl -n hal-agent get deploy,pods,secret,sa
 # deploy hal-agent-hal-k8s-operator: READY 1/1
-# secret gemini-api: present
-# secret github-pat: present
+# secret gemini-api, github-triage, github-fix: present
+# sa hal-job-triage, hal-job-fix: present
 kubectl -n hal-agent logs deploy/hal-agent-hal-k8s-operator | tail -5
 # must show "Starting manager" with no error
 ```
@@ -289,7 +291,7 @@ task kind-poc-clean
 | Operator pod in `ImagePullBackOff` / `ErrImageNeverPull` | Image not loaded into KinD (or unqualified name under podman) | Redo step 2 (`task kind-poc-image` handles the `docker.io/library/` prefix) |
 | Fix Job in `ImagePullBackOff` | Fix image not built/loaded | Redo `task kind-poc-image`; chart `fix.image` must match loaded tag |
 | `podman build`: `stat .../cmd/main.go: directory not found` | Overly aggressive `.dockerignore` (old Kubebuilder scaffold) | The repo ships a fixed `.dockerignore` — `git pull` / rebuild |
-| Job in `CreateContainerConfigError` | `gemini-api` or `github-pat` Secret missing | `kubectl -n hal-agent get secret`; redo Helm with keys exported |
+| Job in `CreateContainerConfigError` | `gemini-api`, `github-triage`, or `github-fix` Secret missing | `kubectl -n hal-agent get secret`; redo Helm with keys exported (GKE: wait for VSO sync) |
 | Job logs: `HTTP 400/403 API key not valid` | Invalid Gemini key | Regenerate on aistudio.google.com/apikey, redo step 3 |
 | Job logs: `HTTP 429 RESOURCE_EXHAUSTED` | Free-tier quota hit | Wait 1 min and re-apply the CR; override model: `task kind-poc-helm -- --set triage.model=<model>` |
 | `PHASE` stays `Triage` with no Job | Operator not Ready | `kubectl -n hal-agent logs deploy/hal-agent-hal-k8s-operator` |
@@ -330,19 +332,67 @@ Then continue from **Step 4** (apply a sample CR). Full install reference: [READ
 
 ---
 
-## Optional — deploy on GKE (T14)
+## Optional — deploy on GKE (T14 / T15+)
 
 Lab cluster from `hal-agent-infra` + GHCR images. Full runbook:
 [`docs/plans/T14-deploy-operator-gke.md`](docs/plans/T14-deploy-operator-gke.md).
+Secrets on GKE come from **VSO** (three VaultAuth channels) — do **not** pass
+`--set gemini.apiKey` / `--set github.token`.
+
+| Secret | VaultAuth | Source |
+|---|---|---|
+| `gemini-api` | `vault-auth-gemini` (SA `hal-agent-vso`) | KV `hal-agent/llm` |
+| `github-triage` | `vault-auth-triage` (SA `hal-job-triage`) | `github/token/triage` |
+| `github-fix` | `vault-auth-fix` (SA `hal-job-fix`) | `github/token/fix` |
+
+### Multi VaultAuth cutover (lab)
+
+Order matters — infra first, then operator.
+
+**Prereqs:** `gcloud auth application-default login` if ADC returns
+`invalid_rapt` / `invalid_grant`; keep `github_app_configure=true` + App vars so
+`terraform plan` does **not** destroy GitHub permission sets; Vault
+port-forward + token.
 
 ```bash
-# From hal-agent-infra/envs/lab — get-credentials, then from operator repo:
+# 1) Infra — from hal-agent-infra (Vault port-forward + token required)
+kubectl -n hal-agent port-forward svc/vault 8200:8200   # terminal A
+cd /path/to/hal-agent-infra/envs/lab
+export TF_VAR_vault_token=root   # lab/dev only
+export GOOGLE_IMPERSONATE_SERVICE_ACCOUNT="$(cd ../bootstrap && terraform output -raw runner_sa_email)"
+terraform plan \
+  -var="vault_configure_auth=true" \
+  -var="vso_configure_vault_auth=true" \
+  -var="vso_apply_crs=true" \
+  -var="vault_provider_address=http://127.0.0.1:8200"
+# Review plan, then:
+terraform apply \
+  -var="vault_configure_auth=true" \
+  -var="vso_configure_vault_auth=true" \
+  -var="vso_apply_crs=true" \
+  -var="vault_provider_address=http://127.0.0.1:8200"
+
+# 2) Verify three Secrets (keys only — do not print values)
+kubectl -n hal-agent get vaultauth vault-auth-gemini vault-auth-triage vault-auth-fix
+kubectl -n hal-agent get secret gemini-api github-triage github-fix
+kubectl -n hal-agent get sa hal-agent-vso hal-job-triage hal-job-fix
+
+# 3) Operator — from this repo (createSecret false via values-ghcr.yaml)
 helm upgrade --install hal-agent ./charts/hal-k8s-operator \
   --namespace hal-agent --create-namespace \
   -f charts/hal-k8s-operator/values-ghcr.yaml \
-  --set image.tag=v0.0.2 \
-  --set gemini.apiKey="$GEMINI_API_KEY" \
-  --set github.token="$GITHUB_TOKEN"
+  --set image.tag=<tag> \
+  --set fix.image=ghcr.io/hashimiche/hal-k8s-operator-fix:<tag>
+
+# 4) Smoke Job1 / Job2 (same CR / approve / PR flow as KinD steps 4–8)
+kubectl apply -f config/samples/job2/issue-5.yaml
+# … wait triage → approve → PROpen …
+
+# 5) Cleanup leftover monolith Secret (after smoke green)
+kubectl -n hal-agent delete vaultdynamicsecret github-pat --ignore-not-found
+kubectl -n hal-agent delete secret github-pat --ignore-not-found
 ```
 
-Then POC steps 4–8 on GKE (same CR / approve / PR flow as KinD).
+Cutover details also live in
+[`hal-agent-infra/README.md`](../hal-agent-infra/README.md) (multi VaultAuth
+cutover section).

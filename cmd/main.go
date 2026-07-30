@@ -67,8 +67,11 @@ func main() {
 	var geminiSecretName string
 	var geminiSecretKey string
 	var geminiModel string
-	var githubSecretName string
+	var githubTriageSecretName string
+	var githubFixSecretName string
 	var githubSecretKey string
+	var jobTriageServiceAccount string
+	var jobFixServiceAccount string
 	var jobRuntimeClassName string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -98,10 +101,20 @@ func main() {
 		"Key inside the Secret for the Gemini API key.")
 	flag.StringVar(&geminiModel, "gemini-model", envOr("GEMINI_MODEL", defaults.GeminiModel),
 		"Gemini model id passed to triage/fix Jobs.")
-	flag.StringVar(&githubSecretName, "github-secret-name", envOr("GITHUB_SECRET_NAME", defaults.GitHubSecretName),
-		"Name of the Secret that holds the GitHub PAT for fix Jobs.")
+	flag.StringVar(&githubTriageSecretName, "github-triage-secret-name",
+		envOr("GITHUB_TRIAGE_SECRET_NAME", defaults.GitHubTriageSecretName),
+		"Name of the Secret that holds the GitHub token for triage Jobs.")
+	flag.StringVar(&githubFixSecretName, "github-fix-secret-name",
+		envOr("GITHUB_FIX_SECRET_NAME", defaults.GitHubFixSecretName),
+		"Name of the Secret that holds the GitHub token for fix Jobs.")
 	flag.StringVar(&githubSecretKey, "github-secret-key", envOr("GITHUB_SECRET_KEY", defaults.GitHubSecretKey),
-		"Key inside the Secret for the GitHub PAT.")
+		"Key inside the GitHub Secrets for the token.")
+	flag.StringVar(&jobTriageServiceAccount, "job-triage-service-account",
+		envOr("JOB_TRIAGE_SERVICE_ACCOUNT", defaults.JobTriageServiceAccount),
+		"ServiceAccount name for triage Job pods (automount token disabled).")
+	flag.StringVar(&jobFixServiceAccount, "job-fix-service-account",
+		envOr("JOB_FIX_SERVICE_ACCOUNT", defaults.JobFixServiceAccount),
+		"ServiceAccount name for fix Job pods (automount token disabled).")
 	flag.StringVar(&jobRuntimeClassName, "job-runtime-class-name", envOr("JOB_RUNTIME_CLASS_NAME", ""),
 		"RuntimeClassName for triage/fix Job pods (empty = cluster default).")
 	opts := zap.Options{
@@ -204,16 +217,19 @@ func main() {
 	}
 
 	if err := (&controller.IssueResolutionReconciler{
-		Client:              mgr.GetClient(),
-		Scheme:              mgr.GetScheme(),
-		TriageImage:         triageImage,
-		FixImage:            fixImage,
-		GeminiSecretName:    geminiSecretName,
-		GeminiSecretKey:     geminiSecretKey,
-		GeminiModel:         geminiModel,
-		GitHubSecretName:    githubSecretName,
-		GitHubSecretKey:     githubSecretKey,
-		JobRuntimeClassName: jobRuntimeClassName,
+		Client:                  mgr.GetClient(),
+		Scheme:                  mgr.GetScheme(),
+		TriageImage:             triageImage,
+		FixImage:                fixImage,
+		GeminiSecretName:        geminiSecretName,
+		GeminiSecretKey:         geminiSecretKey,
+		GeminiModel:             geminiModel,
+		GitHubTriageSecretName:  githubTriageSecretName,
+		GitHubFixSecretName:     githubFixSecretName,
+		GitHubSecretKey:         githubSecretKey,
+		JobTriageServiceAccount: jobTriageServiceAccount,
+		JobFixServiceAccount:    jobFixServiceAccount,
+		JobRuntimeClassName:     jobRuntimeClassName,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "issueresolution")
 		os.Exit(1)
@@ -222,7 +238,10 @@ func main() {
 		"triageImage", triageImage,
 		"fixImage", fixImage,
 		"geminiSecret", geminiSecretName,
-		"githubSecret", githubSecretName,
+		"githubTriageSecret", githubTriageSecretName,
+		"githubFixSecret", githubFixSecretName,
+		"jobTriageSA", jobTriageServiceAccount,
+		"jobFixSA", jobFixServiceAccount,
 		"model", geminiModel,
 	)
 	// +kubebuilder:scaffold:builder

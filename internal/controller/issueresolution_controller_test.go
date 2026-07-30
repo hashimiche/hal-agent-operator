@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	agentv1alpha1 "github.com/hashicorp-academy/hal-k8s-operator/api/v1alpha1"
+	"github.com/hashicorp-academy/hal-k8s-operator/internal/defaults"
 )
 
 var _ = Describe("IssueResolution Controller", func() {
@@ -104,13 +105,23 @@ var _ = Describe("IssueResolution Controller", func() {
 
 		newReconciler := func() *IssueResolutionReconciler {
 			return &IssueResolutionReconciler{
-				Client:           k8sClient,
-				Scheme:           k8sClient.Scheme(),
-				TriageImage:      triageImagePOC,
-				FixImage:         fixImagePOC,
-				GeminiSecretName: "gemini-api",
-				GitHubSecretName: "github-pat",
+				Client:                 k8sClient,
+				Scheme:                 k8sClient.Scheme(),
+				TriageImage:            triageImagePOC,
+				FixImage:               fixImagePOC,
+				GeminiSecretName:       "gemini-api",
+				GitHubTriageSecretName: "github-triage",
+				GitHubFixSecretName:    "github-fix",
 			}
+		}
+
+		githubTokenEnv := func(envs []corev1.EnvVar) corev1.EnvVar {
+			for _, e := range envs {
+				if e.Name == defaults.GitHubSecretKey {
+					return e
+				}
+			}
+			return corev1.EnvVar{}
 		}
 
 		createSucceededJobWithMessage := func(message string) {
@@ -162,7 +173,13 @@ var _ = Describe("IssueResolution Controller", func() {
 			}, job)).To(Succeed())
 			Expect(job.Spec.Template.Spec.Containers[0].Command).To(Equal([]string{"/triage"}))
 			Expect(job.Spec.Template.Spec.Containers[0].Env).To(ContainElement(HaveField("Name", "GEMINI_API_KEY")))
-			Expect(job.Spec.Template.Spec.Containers[0].Env).To(ContainElement(HaveField("Name", "GITHUB_TOKEN")))
+			Expect(job.Spec.Template.Spec.ServiceAccountName).To(Equal("hal-job-triage"))
+			Expect(job.Spec.Template.Spec.AutomountServiceAccountToken).To(HaveValue(BeFalse()))
+			ghEnv := githubTokenEnv(job.Spec.Template.Spec.Containers[0].Env)
+			Expect(ghEnv.ValueFrom).NotTo(BeNil())
+			Expect(ghEnv.ValueFrom.SecretKeyRef).NotTo(BeNil())
+			Expect(ghEnv.ValueFrom.SecretKeyRef.Name).To(Equal("github-triage"))
+			Expect(ghEnv.ValueFrom.SecretKeyRef.Key).To(Equal(defaults.GitHubSecretKey))
 
 			updated := &agentv1alpha1.IssueResolution{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, updated)).To(Succeed())
@@ -390,8 +407,14 @@ var _ = Describe("IssueResolution Controller", func() {
 				Namespace: resourceNamespace,
 			}, job)).To(Succeed())
 			Expect(job.Spec.Template.Spec.Containers[0].Command).To(Equal([]string{"/fix"}))
-			Expect(job.Spec.Template.Spec.Containers[0].Env).To(ContainElement(HaveField("Name", "GITHUB_TOKEN")))
 			Expect(job.Spec.Template.Spec.Containers[0].Env).To(ContainElement(HaveField("Name", "GEMINI_API_KEY")))
+			Expect(job.Spec.Template.Spec.ServiceAccountName).To(Equal("hal-job-fix"))
+			Expect(job.Spec.Template.Spec.AutomountServiceAccountToken).To(HaveValue(BeFalse()))
+			ghEnv := githubTokenEnv(job.Spec.Template.Spec.Containers[0].Env)
+			Expect(ghEnv.ValueFrom).NotTo(BeNil())
+			Expect(ghEnv.ValueFrom.SecretKeyRef).NotTo(BeNil())
+			Expect(ghEnv.ValueFrom.SecretKeyRef.Name).To(Equal("github-fix"))
+			Expect(ghEnv.ValueFrom.SecretKeyRef.Key).To(Equal(defaults.GitHubSecretKey))
 
 			ir := &agentv1alpha1.IssueResolution{}
 			Expect(k8sClient.Get(ctx, typeNamespacedName, ir)).To(Succeed())

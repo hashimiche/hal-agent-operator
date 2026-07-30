@@ -36,8 +36,11 @@ spec:
             - --gemini-secret-name={{ .Values.gemini.secretName }}
             - --gemini-secret-key={{ .Values.gemini.secretKey }}
             - --gemini-model={{ .Values.triage.model }}
-            - --github-secret-name={{ .Values.github.secretName }}
+            - --github-triage-secret-name={{ .Values.github.triageSecretName }}
+            - --github-fix-secret-name={{ .Values.github.fixSecretName }}
             - --github-secret-key={{ .Values.github.secretKey }}
+            - --job-triage-service-account={{ .Values.jobServiceAccounts.triage }}
+            - --job-fix-service-account={{ .Values.jobServiceAccounts.fix }}
             {{- if .Values.runtimeClassName }}
             - --job-runtime-class-name={{ .Values.runtimeClassName }}
             {{- end }}

@@ -71,10 +71,16 @@ type IssueResolutionReconciler struct {
 	GeminiSecretKey string
 	// GeminiModel is passed to triage/fix Jobs as GEMINI_MODEL.
 	GeminiModel string
-	// GitHubSecretName holds the fine-grained PAT for Job 2 (clone/push/PR).
-	GitHubSecretName string
-	// GitHubSecretKey is the key inside that Secret.
+	// GitHubTriageSecretName holds the GitHub token Secret for Job 1 (comment/labels).
+	GitHubTriageSecretName string
+	// GitHubFixSecretName holds the GitHub token Secret for Job 2 (clone/push/PR).
+	GitHubFixSecretName string
+	// GitHubSecretKey is the key inside the GitHub Secrets.
 	GitHubSecretKey string
+	// JobTriageServiceAccount is the SA name for triage Job pods.
+	JobTriageServiceAccount string
+	// JobFixServiceAccount is the SA name for fix Job pods.
+	JobFixServiceAccount string
 	// JobRuntimeClassName is applied to triage/fix Job pod templates when non-empty.
 	JobRuntimeClassName string
 }
@@ -401,7 +407,7 @@ func (r *IssueResolutionReconciler) buildFixJob(ir *agentv1alpha1.IssueResolutio
 	image := r.fixImage()
 	geminiSecret := r.geminiSecretName()
 	geminiKey := r.geminiSecretKey()
-	githubSecret := r.githubSecretName()
+	githubSecret := r.githubFixSecretName()
 	githubKey := r.githubSecretKey()
 	model := r.geminiModel()
 	jobName := fixJobName(ir, attempt)
@@ -423,7 +429,7 @@ func (r *IssueResolutionReconciler) buildFixJob(ir *agentv1alpha1.IssueResolutio
 			},
 		},
 		{
-			Name: "GITHUB_TOKEN",
+			Name: defaults.GitHubSecretKey,
 			ValueFrom: &corev1.EnvVarSource{
 				SecretKeyRef: &corev1.SecretKeySelector{
 					LocalObjectReference: corev1.LocalObjectReference{Name: githubSecret},
@@ -466,6 +472,7 @@ func (r *IssueResolutionReconciler) buildFixJob(ir *agentv1alpha1.IssueResolutio
 				},
 				Spec: corev1.PodSpec{
 					RestartPolicy:                corev1.RestartPolicyNever,
+					ServiceAccountName:           r.jobFixServiceAccount(),
 					AutomountServiceAccountToken: ptr.To(false),
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: ptr.To(true),
@@ -562,7 +569,7 @@ func (r *IssueResolutionReconciler) buildTriageJob(ir *agentv1alpha1.IssueResolu
 	image := r.triageImage()
 	secretName := r.geminiSecretName()
 	secretKey := r.geminiSecretKey()
-	githubSecret := r.githubSecretName()
+	githubSecret := r.githubTriageSecretName()
 	githubKey := r.githubSecretKey()
 	model := r.geminiModel()
 	jobName := triageJobName(ir)
@@ -588,6 +595,7 @@ func (r *IssueResolutionReconciler) buildTriageJob(ir *agentv1alpha1.IssueResolu
 				},
 				Spec: corev1.PodSpec{
 					RestartPolicy:                corev1.RestartPolicyNever,
+					ServiceAccountName:           r.jobTriageServiceAccount(),
 					AutomountServiceAccountToken: ptr.To(false),
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: ptr.To(true),
@@ -624,7 +632,7 @@ func (r *IssueResolutionReconciler) buildTriageJob(ir *agentv1alpha1.IssueResolu
 									},
 								},
 								{
-									Name: "GITHUB_TOKEN",
+									Name: defaults.GitHubSecretKey,
 									ValueFrom: &corev1.EnvVarSource{
 										SecretKeyRef: &corev1.SecretKeySelector{
 											LocalObjectReference: corev1.LocalObjectReference{Name: githubSecret},
@@ -733,11 +741,18 @@ func (r *IssueResolutionReconciler) fixImage() string {
 	return defaults.FixImage
 }
 
-func (r *IssueResolutionReconciler) githubSecretName() string {
-	if r.GitHubSecretName != "" {
-		return r.GitHubSecretName
+func (r *IssueResolutionReconciler) githubTriageSecretName() string {
+	if r.GitHubTriageSecretName != "" {
+		return r.GitHubTriageSecretName
 	}
-	return defaults.GitHubSecretName
+	return defaults.GitHubTriageSecretName
+}
+
+func (r *IssueResolutionReconciler) githubFixSecretName() string {
+	if r.GitHubFixSecretName != "" {
+		return r.GitHubFixSecretName
+	}
+	return defaults.GitHubFixSecretName
 }
 
 func (r *IssueResolutionReconciler) githubSecretKey() string {
@@ -745,6 +760,20 @@ func (r *IssueResolutionReconciler) githubSecretKey() string {
 		return r.GitHubSecretKey
 	}
 	return defaults.GitHubSecretKey
+}
+
+func (r *IssueResolutionReconciler) jobTriageServiceAccount() string {
+	if r.JobTriageServiceAccount != "" {
+		return r.JobTriageServiceAccount
+	}
+	return defaults.JobTriageServiceAccount
+}
+
+func (r *IssueResolutionReconciler) jobFixServiceAccount() string {
+	if r.JobFixServiceAccount != "" {
+		return r.JobFixServiceAccount
+	}
+	return defaults.JobFixServiceAccount
 }
 
 func firstNonEmpty(vals ...string) string {

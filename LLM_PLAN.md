@@ -18,14 +18,25 @@
    update the status column, and move the **Current position** pointer.
 4. Never skip a `BLOCKING` task. Never edit generated files by hand.
 
-**Current position:** `T15 — VSO + Vault (infra / operator split)` — **vague 1 lab mostly done**
+**Current position:** `T16 — GitHub Actions` — **demo path DONE on `test-hal-operator`**
 
-> Pause 2026-07-29: VSO Gemini SYNCED; GitHub App plugin + `vault read github/token/triage`
-> OK (JIT). Vault lab has `-dev-plugin-dir`. Chart `createSecret: false` (GKE values).
-> **Next (2026-07-30):** T15 wave 2 — `VaultDynamicSecret` → Jobs (drop PAT); then OCI
-> retag `v0.0.3` (NP missing from `0.0.2`); E2E VSO-only → `PROpen`. Campaign plan:
-> Cursor plan `t15_vso_vault_campaign`. WIF = GHA→GCP/GKE only; controller never
-> talks to GH/Vault. T14 done; T12 `v0.0.2` on GHCR; T16 `create-cr` still open.
+> **Decision 2026-07-30:** product `hashimiche/hal` = **later** target. Lab/demo
+> full chain = fixture **`hashimiche/test-hal-operator`** (no paid long-lived GKE
+> expectation — learning + colleague demos).
+>
+> **T15 [x]** VSO + manual CR → `PROpen`
+> ([test-hal-operator#13](https://github.com/hashimiche/test-hal-operator/pull/13)).
+>
+> **T16 [x] demo** issue→create-cr→triage→`agent go`→fix→`PROpen`:
+> [test-hal-operator#14](https://github.com/hashimiche/test-hal-operator/issues/14)
+> → [PR #15](https://github.com/hashimiche/test-hal-operator/pull/15). Workflows on
+> fixture `main` (`0c527b2`); env `hal-cluster` + WIF allowlist fixture; Vault
+> permission sets fixture-only. Doc: `test-hal-operator/docs/t16-demo-fixture.md`.
+>
+> **Later:** install App + WIF on product `hal` if/when needed. Next tracker items:
+> T17 hardening, T18 docs (optional for lab teardown).
+>
+> WIF = GHA→GCP/GKE only; controller never talks to GH/Vault.
 
 ## Progress tracker
 
@@ -46,9 +57,10 @@
 | T12 | [x] done | operator | CI publish: image GHCR + Helm chart |
 | T13 | [x] done | `hal-agent-infra` | TF GKE/Vault/WIF/RBAC + smoke WIF (2026-07-29) |
 | T14 | [x] done | operator | Deploy operator on GKE |
-| T15 | [~] partial | infra + operator | VSO Gemini + GH App token CLI OK ; DynamicSecret/Jobs + OCI v0.0.3 remain |
-| T16 | [~] partial | `hal` fork | Approve workflow done; `create-cr` + env/E2E remain |
+| T15 | [x] done | infra + operator | VSO DynamicSecret + OCI v0.0.3 + E2E GKE → PROpen (2026-07-30) |
+| T16 | [x] done (demo) | `test-hal-operator` | Full GHA chain on fixture; product `hal` deferred |
 | T17 | [ ] todo | operator | Hardening & ops |
+| T17a | [ ] in progress | infra + operator | Multi VaultAuth secrets (`gemini-api` / `github-triage` / `github-fix`) |
 | T18 | [ ] todo | operator + infra | Docs (ROADMAP.md + infra README) |
 
 ## Context
@@ -354,8 +366,9 @@ Secrets still K8s until T15. Runbook: `docs/plans/T14-deploy-operator-gke.md`.
 **Decision (2026-07-29):** secret delivery = **Vault Secrets Operator (VSO)**,
 not init-container Vault auth in Job pods. VSO is a **cluster component** (Helm
 in `hal-agent-infra`); it is **not** bundled in the `hal-k8s-operator` image.
-Jobs keep `SecretKeyRef` — **zero controller change** if Secret names/keys stay
-stable (`gemini-api`, `github-triage` / `github-fix` or chart defaults).
+Jobs keep `SecretKeyRef`. Target Secret names (T17a): `gemini-api`,
+`github-triage`, `github-fix` (key `GITHUB_TOKEN`). T15 lab initially used a
+monolith `github-pat`; see **T17a**.
 
 **To do**:
 
@@ -434,6 +447,37 @@ fork → CR on GKE → triage → `"agent go"` → Job 2 → PR; human merge onl
   triggers). Keep `publish.yml` separate (tag/release only).
 
 **Acceptance**: reproducible end-to-end on GKE + basic alerting in place.
+
+---
+
+## T17a — Multi VaultAuth GitHub secrets split
+
+**Why:** T15 shipped one `VaultDynamicSecret` → `github-pat` (wide
+`token/fix` scopes for both Jobs). Split into **three VSO VaultAuth channels**
+so a compromised triage CR/path cannot mint a push/PR token.
+
+| Canal | K8s SA | VaultAuth | Destination Secret | Key |
+|---|---|---|---|---|
+| Gemini | `hal-agent-vso` | `vault-auth-gemini` | `gemini-api` | `GEMINI_API_KEY` |
+| Triage | `hal-job-triage` | `vault-auth-triage` | `github-triage` | `GITHUB_TOKEN` |
+| Fix | `hal-job-fix` | `vault-auth-fix` | `github-fix` | `GITHUB_TOKEN` |
+
+**Remove:** Secret / `VaultDynamicSecret` `github-pat`.
+
+**Layers:**
+
+| Repo | Work |
+|---|---|
+| `hal-agent-infra` | 3 SA + 3 Vault roles/policies + 3 VaultAuth; VSS gemini + 2 VDS; narrow fix permission set (`contents` + `pull_requests`, no `issues`) |
+| `hal-k8s-operator` | Dual mounts (`--github-triage-secret-name` / `--github-fix-secret-name`); Job `serviceAccountName` + `automount=false`; KinD chart dual Secrets from one PAT |
+
+**Cutover order (lab):** terraform apply infra → verify 3 Secrets → helm upgrade
+operator → smoke Job1/Job2 → delete leftover `github-pat`. Commands:
+[`POC.md`](POC.md) (GKE cutover) +
+[`hal-agent-infra/README.md`](../hal-agent-infra/README.md).
+
+**Acceptance:** Job 1 uses `github-triage` only; Job 2 uses `github-fix` only;
+no `github-pat` in cluster; controller still never calls Vault/GitHub.
 
 ---
 

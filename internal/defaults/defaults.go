@@ -38,8 +38,17 @@ const TriageImage = "hal-k8s-operator:poc"
 // FixImage is the default container image for fix Jobs (needs Go toolchain).
 const FixImage = "hal-k8s-operator-fix:poc"
 
-// GitHubSecretName is the default Secret holding a fine-grained PAT for Job 2.
-const GitHubSecretName = "github-pat"
+// GitHubTriageSecretName is the default Secret for Job 1 (issues:write).
+const GitHubTriageSecretName = "github-triage"
 
-// GitHubSecretKey is the default key inside that Secret.
+// GitHubFixSecretName is the default Secret for Job 2 (contents + pull_requests write).
+const GitHubFixSecretName = "github-fix"
+
+// GitHubSecretKey is the default key inside the GitHub Secrets.
 const GitHubSecretKey = "GITHUB_TOKEN"
+
+// JobTriageServiceAccount is the default SA for triage Job pods (no K8s API rights).
+const JobTriageServiceAccount = "hal-job-triage"
+
+// JobFixServiceAccount is the default SA for fix Job pods (no K8s API rights).
+const JobFixServiceAccount = "hal-job-fix"

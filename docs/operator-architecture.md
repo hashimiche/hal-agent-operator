@@ -168,26 +168,38 @@ On every reconcile, for one `IssueResolution`:
 > `SecretKeyRef`. The controller unchanged: it still references Secret
 > names/keys; it never talks to Vault or GitHub.
 
-**Gemini (static):** KV path (e.g. `hal-agent/llm`) → `VaultStaticSecret` →
-K8s Secret `gemini-api` (same name/key as KinD POC).
+**Three VSO VaultAuth channels** (same NS `hal-agent`; each SA + Vault role is
+narrow). VSO does `TokenRequest` → kubernetes auth → sync; Jobs never call Vault.
+
+| Canal | K8s SA | VaultAuth | VSO CR | Destination Secret | Key |
+|---|---|---|---|---|---|
+| Gemini | `hal-agent-vso` | `vault-auth-gemini` | `VaultStaticSecret` | `gemini-api` | `GEMINI_API_KEY` |
+| Triage | `hal-job-triage` | `vault-auth-triage` | `VaultDynamicSecret` | `github-triage` | `GITHUB_TOKEN` |
+| Fix | `hal-job-fix` | `vault-auth-fix` | `VaultDynamicSecret` | `github-fix` | `GITHUB_TOKEN` |
+
+**Gemini (static):** KV path (e.g. `hal-agent/llm`) → `VaultStaticSecret`
+(`vaultAuthRef: vault-auth-gemini`) → K8s Secret `gemini-api`.
 
 **GitHub (dynamic, JIT):** GitHub App (App ID + private key in Vault) +
 [`vault-plugin-secrets-github`](https://github.com/martinbaillie/vault-plugin-secrets-github)
-→ `VaultDynamicSecret` → K8s Secret(s) for triage/fix. Vault signs an App JWT
-and exchanges an **installation token** with short TTL (~1 h); VSO renews before
-expiry. **No long-lived PAT** in Helm or the cluster.
+→ two `VaultDynamicSecret`s (`github/token/triage`, `github/token/fix`). Vault
+signs an App JWT and exchanges an **installation token** with short TTL (~1 h);
+VSO renews before expiry. **No long-lived PAT** and **no** shared `github-pat`
+Secret — triage cannot read `token/fix`.
 
-| Job | Token scopes (minimal) |
-|---|---|
-| Job 1 (triage) | `issues:write` (comment + label) |
-| Job 2 (fix) | `contents:write` + `pull_requests:write` (push + PR) — never merge/admin |
+| Job | Secret mounted | Token scopes (minimal) | Pod SA (`automount=false`) |
+|---|---|---|---|
+| Job 1 (triage) | `github-triage` | `issues:write` (comment + label) | `hal-job-triage` |
+| Job 2 (fix) | `github-fix` | `contents:write` + `pull_requests:write` (push + PR) — never merge/admin | `hal-job-fix` |
 
 **Auth boundaries:**
 
 - **WIF (OIDC)** = GitHub Actions → GCP/GKE only — not operator ↔ GitHub, not
   Vault ↔ GitHub.
-- Job ServiceAccounts: **no** Vault kubernetes auth, **no** K8s API rights,
-  `automountServiceAccountToken: false`. Jobs read synced Secrets only.
+- Job ServiceAccounts: **no** Vault kubernetes auth from the Job pod, **no** K8s
+  API rights, `automountServiceAccountToken: false`. Jobs mount synced Secrets
+  only. The same SA names appear on `VaultAuth` so VSO can mint tokens; that is
+  not Job→Vault login.
 - **No secret in the CR** (readable through RBAC `get` in etcd).
 
 **Trade-off vs init-container:** With init-container, tokens could live only on
@@ -230,8 +242,10 @@ The boundary chosen for the POC is therefore a hardened pod, defense in depth:
 - Dedicated ServiceAccount with **no rights at all** on the Kubernetes API, `automountServiceAccountToken: false`.
 - CPU/RAM limits **and `activeDeadlineSeconds`** (protection against a runaway test loop — size it against the ~37 s baseline above; ~300 s leaves margin).
 - **Secrets mount:** KinD POC uses chart-created K8s Secrets (`gemini-api`,
-  `github-pat`). **T15 (GKE):** VSO syncs Vault → K8s Secrets; Jobs keep
-  `SecretKeyRef` — no init-container Vault auth in the Job pod.
+  `github-triage`, `github-fix` — local PAT may fill both GitHub Secrets).
+  **GKE / T15+:** VSO syncs Vault → those three Secrets via distinct VaultAuth
+  channels; Jobs keep `SecretKeyRef` — no init-container Vault auth in the Job
+  pod. `github-pat` is removed.
 
 The day the target to fix needs Docker for its tests is the day the Sysbox
 question reopens — alongside the alternatives of a dedicated node or an external
@@ -311,11 +325,13 @@ the termination-log.
 > criterion that matters for a demonstrable POC. Moving to multi-file / diff is a
 > later evolution.
 
-**Job 2 secrets:**
+**Job secrets:**
 
-- **KinD POC:** K8s Secret `github-pat` (fine-grained PAT on the fork) +
-  `gemini-api`, created by the chart.
-- **GKE / T15:** VSO `VaultStaticSecret` → `gemini-api`; VSO
-  `VaultDynamicSecret` → GitHub token Secret(s) from GitHub App + Vault plugin
-  (JIT, short TTL). Chart `createSecret: false`; no plaintext in Helm values.
-  Controller still uses `SecretKeyRef` — same contract, different provenance.
+- **KinD POC:** chart creates `gemini-api`, `github-triage`, `github-fix`
+  (fine-grained PAT on the fork may populate both GitHub Secrets; key
+  `GITHUB_TOKEN`).
+- **GKE / T15+:** VSO `VaultStaticSecret` → `gemini-api`; two
+  `VaultDynamicSecret`s → `github-triage` / `github-fix` (GitHub App + Vault
+  plugin, JIT, short TTL). Chart `createSecret: false`; no plaintext in Helm
+  values. Controller mounts the role-specific Secret — same `SecretKeyRef`
+  contract, different provenance.

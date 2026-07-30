@@ -133,7 +133,7 @@ tasks:
       - |
         # Namespace via --create-namespace only (no Namespace object in the chart),
         # so re-runs stay idempotent when hal-agent already exists.
-        # github.token → Secret github-pat (Job 1 comment/labels + Job 2 clone/PR).
+        # github.token → Secrets github-triage + github-fix (same PAT on KinD).
         helm upgrade --install hal-agent ./charts/hal-k8s-operator \
           --namespace hal-agent --create-namespace \
           --set image.repository=hal-k8s-operator \

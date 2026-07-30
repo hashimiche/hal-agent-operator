@@ -11,8 +11,11 @@ helm upgrade --install hal-k8s-operator ./charts/hal-k8s-operator \
   --set github.token="$GITHUB_TOKEN"
 ```
 
-Helm creates Secrets `gemini-api` and `github-pat` when `createSecret: true` and
-the keys are set via `--set`.
+When `createSecret: true` and keys are set via `--set`, Helm creates Secrets
+`gemini-api`, `github-triage`, and `github-fix` (KinD may populate both GitHub
+Secrets from the same local PAT; key `GITHUB_TOKEN`). Job SAs `hal-job-triage` /
+`hal-job-fix` are chart-created locally (empty rights, `automount` false on
+Job pods).
 
 **GKE / GHCR OCI** (`values-ghcr.yaml`):
 
@@ -29,12 +32,18 @@ in the overlay) and VSO-only secrets (`createSecret: false`).
 
 Do **not** pass `--set gemini.apiKey` or `--set github.token`. The overlay sets
 `gemini.createSecret: false` and `github.createSecret: false`. Provision Secrets
-with VSO before or after install:
+with VSO (three VaultAuth channels in `hal-agent-infra`):
 
-| Secret       | Source (T15)           | Keys used by operator Jobs |
-|--------------|------------------------|----------------------------|
-| `gemini-api` | VaultStaticSecret (KV) | `GEMINI_API_KEY`           |
-| `github-pat` | VaultDynamicSecret     | `GITHUB_TOKEN`             |
+| Secret          | VaultAuth              | Source (Vault)           | Keys used by Jobs |
+|-----------------|------------------------|--------------------------|-------------------|
+| `gemini-api`    | `vault-auth-gemini`    | KV `hal-agent/llm`       | `GEMINI_API_KEY`  |
+| `github-triage` | `vault-auth-triage`    | `github/token/triage`    | `GITHUB_TOKEN`    |
+| `github-fix`    | `vault-auth-fix`       | `github/token/fix`       | `GITHUB_TOKEN`    |
 
-Operator Deployment args (`--gemini-secret-name`, `--github-secret-name`, etc.)
-default to the names above; override in values only if VSO destination names differ.
+SAs `hal-agent-vso`, `hal-job-triage`, `hal-job-fix` are created by infra on
+GKE (`create: false` in the chart overlay). Operator Deployment args
+(`--gemini-secret-name`, `--github-triage-secret-name`,
+`--github-fix-secret-name`, etc.) default to the names above; override in
+values only if VSO destination names differ.
+
+**Removed:** `github-pat` (replaced by `github-triage` + `github-fix`).

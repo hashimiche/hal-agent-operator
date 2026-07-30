@@ -22,7 +22,11 @@ networkPolicy:
 gemini:
   createSecret: false
 
-# VSO syncs Vault → K8s Secret github-pat (VaultDynamicSecret, T15 W2).
-# Operator reads github.secretName / github.secretKey — defaults unchanged.
+# VSO syncs Vault → K8s Secrets github-triage / github-fix (VaultDynamicSecret).
+# Operator reads github.triageSecretName / github.fixSecretName — defaults unchanged.
 github:
   createSecret: false
+
+# Infra (hal-agent-infra) creates job SAs + VaultAuth bindings; do not recreate here.
+jobServiceAccounts:
+  create: false
