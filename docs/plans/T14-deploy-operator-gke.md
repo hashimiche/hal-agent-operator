@@ -27,7 +27,7 @@ chart), with Job egress NetworkPolicy enforced, using K8s Secrets until Vault
 
 | Requirement | Notes |
 |---|---|
-| T12 artifacts | Tag `v0.0.2` (or newer): `ghcr.io/hashimiche/hal-k8s-operator(:-fix):<tag>` + `oci://ghcr.io/hashimiche/charts/hal-k8s-operator` |
+| T12 artifacts | Tag `v0.0.3` (or newer): `ghcr.io/hashimiche/hal-k8s-operator(:-fix):<tag>` + `oci://ghcr.io/hashimiche/charts/hal-k8s-operator` |
 | T13 lab | `hal-agent-infra/envs/lab` applied; outputs usable |
 | Tools | `gcloud`, `kubectl`, `helm`, ADC (or `GOOGLE_IMPERSONATE_SERVICE_ACCOUNT`) |
 | `GEMINI_API_KEY` | Google AI Studio |
@@ -102,16 +102,18 @@ helm upgrade --install hal-agent ./charts/hal-k8s-operator \
   --set github.token="$GITHUB_TOKEN"
 ```
 
-**OCI-only** (once the published chart includes Job NetworkPolicy):
+**OCI-only** (Job NetworkPolicy + VSO secrets; chart `0.0.3+`):
 
 ```bash
-helm upgrade --install hal-agent oci://ghcr.io/hashimiche/charts/hal-k8s-operator \
-  --version 0.0.2 \
+helm upgrade --install hal-agent \
+  oci://ghcr.io/hashimiche/charts/hal-k8s-operator \
+  --version 0.0.3 \
   --namespace hal-agent --create-namespace \
-  -f charts/hal-k8s-operator/values-ghcr.yaml \
-  --set gemini.apiKey="$GEMINI_API_KEY" \
-  --set github.token="$GITHUB_TOKEN"
+  -f charts/hal-k8s-operator/values-ghcr.yaml
 ```
+
+Do **not** pass `--set gemini.apiKey` or `--set github.token`. Provision `gemini-api` and
+`github-pat` with VSO before or after install (see chart README).
 
 (`values-ghcr.yaml` sets `networkPolicy.enabled: true` and GHCR image repos.)
 

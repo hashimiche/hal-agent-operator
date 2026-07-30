@@ -17,11 +17,15 @@ the keys are set via `--set`.
 **GKE / GHCR OCI** (`values-ghcr.yaml`):
 
 ```bash
-helm upgrade --install hal-k8s-operator oci://ghcr.io/hashimiche/charts/hal-k8s-operator \
-  --version <tag> \
+helm upgrade --install hal-k8s-operator \
+  oci://ghcr.io/hashimiche/charts/hal-k8s-operator \
+  --version 0.0.3 \
   --namespace hal-k8s-operator-system --create-namespace \
   -f charts/hal-k8s-operator/values-ghcr.yaml
 ```
+
+Published chart `0.0.3` includes Job egress NetworkPolicy (`networkPolicy.enabled: true`
+in the overlay) and VSO-only secrets (`createSecret: false`).
 
 Do **not** pass `--set gemini.apiKey` or `--set github.token`. The overlay sets
 `gemini.createSecret: false` and `github.createSecret: false`. Provision Secrets
